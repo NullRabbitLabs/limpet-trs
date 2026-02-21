@@ -50,6 +50,8 @@ use limpet::timing::collect_timing_samples;
 struct ServerState {
     worker_node: String,
     interface: Option<String>,
+    /// BPF timing backend, initialised once at startup. None = userspace fallback.
+    bpf: Option<Arc<Mutex<limpet::BpfTimingCollector>>>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -196,9 +198,16 @@ async fn handle_discovery(
 ) -> impl IntoResponse {
     let start = Instant::now();
 
+    tracing::info!(
+        request_id = %req.request_id,
+        target = %req.target_ip,
+        "discovery request received"
+    );
+
     let port_spec = match wire_to_port_spec(&req.ports) {
         Ok(s) => s,
         Err(e) => {
+            tracing::warn!(request_id = %req.request_id, error = %e, "invalid port spec");
             let result = DiscoveryResult {
                 request_id: req.request_id,
                 scan_id: req.scan_id,
@@ -239,6 +248,13 @@ async fn handle_discovery(
         Ok(scan_result) => {
             let actual_ms = start.elapsed().as_millis() as u64;
             let source_ip = scan_result.target_ip.to_string();
+            tracing::info!(
+                request_id = %req.request_id,
+                target = %req.target_ip,
+                backend = %scan_result.backend,
+                duration_ms = actual_ms,
+                "discovery complete"
+            );
 
             let port_results: Vec<DiscoveredPort> = scan_result
                 .ports
@@ -276,6 +292,13 @@ async fn handle_discovery(
         }
         Err(e) => {
             let actual_ms = start.elapsed().as_millis() as u64;
+            tracing::warn!(
+                request_id = %req.request_id,
+                target = %req.target_ip,
+                duration_ms = actual_ms,
+                error = %e,
+                "discovery failed"
+            );
             let result = DiscoveryResult {
                 request_id: req.request_id,
                 scan_id: req.scan_id,
@@ -302,16 +325,29 @@ async fn handle_timing(
     State(state): State<ServerState>,
     Json(req): Json<TimingRequest>,
 ) -> impl IntoResponse {
-    // Initialise BPF timing backend (best-effort; falls back to userspace)
-    let bpf = match limpet::detect_timing_backend(&state.interface) {
-        Ok((_, collector)) => Some(Arc::new(Mutex::new(collector))),
-        Err(e) => {
-            tracing::warn!(error = %e, "BPF backend unavailable for timing, using userspace fallback");
-            None
-        }
-    };
+    tracing::info!(
+        request_id = %req.request_id,
+        target = %req.target_host,
+        port = req.target_port,
+        samples = req.sample_count,
+        "timing request received"
+    );
 
-    let result = collect_timing_samples(&req, bpf).await;
+    let mut result = collect_timing_samples(&req, state.bpf.clone()).await;
+    result.worker_node = Some(state.worker_node);
+    result.source_ip = detect_own_ip();
+
+    tracing::info!(
+        request_id = %result.request_id,
+        target = %result.target_host,
+        port = result.target_port,
+        precision = %result.precision_class,
+        samples = result.samples.len(),
+        mean_us = result.stats.mean,
+        error = result.error.as_deref().unwrap_or(""),
+        "timing complete"
+    );
+
     (StatusCode::OK, Json(result))
 }
 
@@ -501,11 +537,25 @@ async fn main() {
     let interface = std::env::var("LIMPET_INTERFACE").ok();
     let worker_node = default_worker_node();
 
+    // Initialise BPF timing backend once at startup.
+    // On macOS / Docker Desktop this will fail and we fall back to userspace for all requests.
+    let bpf = match limpet::detect_timing_backend(&interface) {
+        Ok((backend, collector)) => {
+            tracing::info!(backend = %backend.as_str(), interface = ?interface, "BPF timing backend initialised");
+            Some(Arc::new(Mutex::new(collector)))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "BPF timing backend unavailable — userspace fallback active");
+            None
+        }
+    };
+
     tracing::info!(worker_node = %worker_node, port = port, "limpet-server starting");
 
     let state = ServerState {
         worker_node,
         interface,
+        bpf,
     };
 
     let app = Router::new()

@@ -345,6 +345,12 @@ pub struct TimingResult {
         with = "base64_opt_bytes"
     )]
     pub banner: Option<Vec<u8>>,
+    /// Source IP used for timing probes (populated by server, not collector).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_ip: Option<String>,
+    /// Worker node hostname (populated by server, not collector).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_node: Option<String>,
 }
 
 /// Statistical summary of timing samples.
@@ -387,6 +393,8 @@ impl TimingResult {
             error: Some(error),
             embedding: None,
             banner: None,
+            source_ip: None,
+            worker_node: None,
         }
     }
 }
