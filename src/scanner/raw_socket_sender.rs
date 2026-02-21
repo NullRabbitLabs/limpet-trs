@@ -13,6 +13,8 @@
 //! production use.
 
 #[cfg(target_os = "linux")]
+use std::any::Any;
+#[cfg(target_os = "linux")]
 use std::net::Ipv4Addr;
 
 #[cfg(target_os = "linux")]
@@ -143,6 +145,10 @@ impl AfXdpSend for RawSocketSender {
     /// via the TC hook; only the RX notification mechanism differs.
     fn has_rx(&self) -> bool {
         false
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 

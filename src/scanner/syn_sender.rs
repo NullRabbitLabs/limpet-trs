@@ -895,8 +895,7 @@ mod tests {
 
         // Verify packet was sent via the mock sender
         let sent = scanner.sender.as_ref().unwrap();
-        // Downcast to inspect sent packets
-        let mock_ref = unsafe { &*(sent.as_ref() as *const dyn AfXdpSend as *const MockAfXdpSender) };
+        let mock_ref = sent.as_any().downcast_ref::<MockAfXdpSender>().expect("sender must be MockAfXdpSender");
         assert_eq!(mock_ref.sent_count(), 1, "one packet should have been sent");
     }
 

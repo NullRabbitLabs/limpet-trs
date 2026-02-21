@@ -8,6 +8,7 @@
 //! and mock implementations exist for full unit testability without
 //! kernel privileges.
 
+use std::any::Any;
 use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 #[cfg(target_os = "linux")]
@@ -64,6 +65,9 @@ pub trait AfXdpSend: Send {
     fn has_rx(&self) -> bool {
         true
     }
+
+    /// Return `self` as `&dyn Any` to enable safe downcasting in tests.
+    fn as_any(&self) -> &dyn Any;
 }
 
 // =============================================================================
@@ -146,6 +150,10 @@ impl AfXdpSend for MockAfXdpSender {
 
     fn source_ip(&self) -> Ipv4Addr {
         self.src_ip
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -853,6 +861,10 @@ impl AfXdpSend for AfXdpSender {
 
     fn source_ip(&self) -> Ipv4Addr {
         self.src_ip
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
