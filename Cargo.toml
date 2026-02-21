@@ -13,6 +13,10 @@ categories = ["network-programming", "command-line-utilities"]
 name = "limpet"
 path = "src/main.rs"
 
+[[bin]]
+name = "limpet-server"
+path = "src/bin/server.rs"
+
 [lib]
 name = "limpet"
 path = "src/lib.rs"
@@ -35,6 +39,7 @@ libc = "0.2"
 clap = { version = "4", features = ["derive"] }
 rmcp = { version = "0.1", features = ["server", "macros", "transport-io"] }
 schemars = "0.8"
+axum = "0.8"
 
 [build-dependencies]
 libbpf-cargo = "0.24"
