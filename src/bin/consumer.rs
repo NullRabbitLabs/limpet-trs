@@ -580,7 +580,7 @@ async fn discovery_consumer_loop(cfg: ConsumerConfig, bpf: Arc<BpfState>) {
                     let xadd_result: redis::RedisResult<String> = redis::cmd("XADD")
                         .arg(&cfg.discovery_result_stream)
                         .arg("*")
-                        .arg("payload")
+                        .arg("data")
                         .arg(&json)
                         .query_async(&mut conn)
                         .await;
@@ -801,7 +801,7 @@ async fn timing_consumer_loop(cfg: ConsumerConfig, bpf: Arc<BpfState>) {
                     let xadd_result: redis::RedisResult<String> = redis::cmd("XADD")
                         .arg(&cfg.timing_result_stream)
                         .arg("*")
-                        .arg("payload")
+                        .arg("data")
                         .arg(&json)
                         .query_async(&mut conn)
                         .await;
