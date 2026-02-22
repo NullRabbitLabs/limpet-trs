@@ -324,6 +324,8 @@ The timing embeddings and ML-ready output from Limpet feed into NullRabbit's pro
 > Simon Morley, NullRabbit Labs, January 2026
 > [DOI: 10.5281/zenodo.18406828](https://doi.org/10.5281/zenodo.18406828)
 
+Timing samples from Limpet can be analysed by [Minerva-HDN](https://github.com/NullRabbitLabs/minerva-hdn) to detect honeypots and synthetic services.
+
 ---
 
 ## License
