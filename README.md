@@ -1,4 +1,4 @@
-# limpet
+# Limpet TRS
 
 High-precision network scanner with eBPF/XDP kernel-bypass timing. Sends raw TCP SYNs, captures responses at the kernel boundary via BPF maps, and measures round-trip time with nanosecond resolution.
 
@@ -15,6 +15,8 @@ Scanned 1000 ports in 2.1s
 ```
 
 ---
+
+What does TRS stand for? Temporal Resonance Scanner. You heard it here first.
 
 ## Features
 
