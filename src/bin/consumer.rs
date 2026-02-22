@@ -735,7 +735,7 @@ async fn timing_consumer_loop(cfg: ConsumerConfig, bpf: Arc<BpfState>) {
             .arg(&cfg.timing_group)
             .arg(&cfg.consumer_name)
             .arg("COUNT")
-            .arg(1)
+            .arg(32)
             .arg("BLOCK")
             .arg(5000)
             .arg("STREAMS")
@@ -759,6 +759,10 @@ async fn timing_consumer_loop(cfg: ConsumerConfig, bpf: Arc<BpfState>) {
         };
 
         for (msg_id, payload_str) in streams {
+            let cfg = cfg.clone();
+            let bpf = bpf.clone();
+            let mut task_conn = conn.clone();
+
             let req: TimingRequest = match serde_json::from_str(&payload_str) {
                 Ok(r) => r,
                 Err(e) => {
@@ -773,54 +777,56 @@ async fn timing_consumer_loop(cfg: ConsumerConfig, bpf: Arc<BpfState>) {
                 }
             };
 
-            tracing::info!(
-                request_id = %req.request_id,
-                target = %req.target_host,
-                port = req.target_port,
-                samples = req.sample_count,
-                "timing request received"
-            );
+            tokio::spawn(async move {
+                tracing::info!(
+                    request_id = %req.request_id,
+                    target = %req.target_host,
+                    port = req.target_port,
+                    samples = req.sample_count,
+                    "timing request received"
+                );
 
-            let mut result = collect_timing_samples(&req, bpf.collector.clone()).await;
-            result.worker_node = Some(cfg.worker_node.clone());
-            result.source_ip = detect_own_ip();
+                let mut result = collect_timing_samples(&req, bpf.collector.clone()).await;
+                result.worker_node = Some(cfg.worker_node.clone());
+                result.source_ip = detect_own_ip();
 
-            tracing::info!(
-                request_id = %result.request_id,
-                target = %result.target_host,
-                port = result.target_port,
-                precision = %result.precision_class,
-                samples = result.samples.len(),
-                error = result.error.as_deref().unwrap_or(""),
-                "timing complete"
-            );
+                tracing::info!(
+                    request_id = %result.request_id,
+                    target = %result.target_host,
+                    port = result.target_port,
+                    precision = %result.precision_class,
+                    samples = result.samples.len(),
+                    error = result.error.as_deref().unwrap_or(""),
+                    "timing complete"
+                );
 
-            // Publish result BEFORE acking (delayed-ack pattern)
-            match serde_json::to_string(&result) {
-                Ok(json) => {
-                    let xadd_result: redis::RedisResult<String> = redis::cmd("XADD")
-                        .arg(&cfg.timing_result_stream)
-                        .arg("*")
-                        .arg("data")
-                        .arg(&json)
-                        .query_async(&mut conn)
-                        .await;
-                    if let Err(e) = xadd_result {
-                        tracing::error!(error = %e, "XADD timing result failed");
+                // Publish result BEFORE acking (delayed-ack pattern)
+                match serde_json::to_string(&result) {
+                    Ok(json) => {
+                        let xadd_result: redis::RedisResult<String> = redis::cmd("XADD")
+                            .arg(&cfg.timing_result_stream)
+                            .arg("*")
+                            .arg("data")
+                            .arg(&json)
+                            .query_async(&mut task_conn)
+                            .await;
+                        if let Err(e) = xadd_result {
+                            tracing::error!(error = %e, "XADD timing result failed");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to serialize timing result");
                     }
                 }
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to serialize timing result");
-                }
-            }
 
-            // ACK after publishing result
-            let _: redis::RedisResult<()> = redis::cmd("XACK")
-                .arg(&cfg.timing_request_stream)
-                .arg(&cfg.timing_group)
-                .arg(&msg_id)
-                .query_async(&mut conn)
-                .await;
+                // ACK after publishing result
+                let _: redis::RedisResult<()> = redis::cmd("XACK")
+                    .arg(&cfg.timing_request_stream)
+                    .arg(&cfg.timing_group)
+                    .arg(&msg_id)
+                    .query_async(&mut task_conn)
+                    .await;
+            });
         }
     }
 }
