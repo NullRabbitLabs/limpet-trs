@@ -86,18 +86,13 @@ impl std::fmt::Display for PortState {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Timing collection backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TimingBackend {
     /// TC egress + XDP ingress (full kernel timestamps).
+    #[default]
     Xdp,
     /// Userspace SYN + XDP SYN-ACK (hybrid mode, TC attach failed).
     XdpHybrid,
-}
-
-impl Default for TimingBackend {
-    fn default() -> Self {
-        Self::Xdp
-    }
 }
 
 impl TimingBackend {

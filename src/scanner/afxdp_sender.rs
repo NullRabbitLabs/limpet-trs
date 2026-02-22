@@ -177,6 +177,7 @@ impl AfXdpSend for MockAfXdpSender {
 /// available for incoming redirected packets. `poll_rx` returns consumed frames to
 /// the fill ring after reading them so the ring never runs dry.
 #[cfg(target_os = "linux")]
+#[allow(dead_code)] // frame_count, fill_cons_off, comp_desc_off stored for potential diagnostics
 pub struct AfXdpSender {
     fd: i32,
     umem_area: *mut libc::c_void,
@@ -359,19 +360,13 @@ impl AfXdpSender {
         // Look up Ethernet addresses for TX frame headers.
         // AF_XDP TX UMEM frames must be full Ethernet frames; build_syn_packet()
         // returns IP-only. We prepend [dst_mac][src_mac][0x08 0x00] in send_raw.
-        let src_mac = Self::read_interface_mac(ifname).map_err(|e| {
-            unsafe {
-                libc::close(fd);
-                libc::munmap(umem_area, umem_size);
-            }
-            e
+        let src_mac = Self::read_interface_mac(ifname).inspect_err(|_| unsafe {
+            libc::close(fd);
+            libc::munmap(umem_area, umem_size);
         })?;
-        let dst_mac = Self::resolve_gateway_mac(ifname).map_err(|e| {
-            unsafe {
-                libc::close(fd);
-                libc::munmap(umem_area, umem_size);
-            }
-            e
+        let dst_mac = Self::resolve_gateway_mac(ifname).inspect_err(|_| unsafe {
+            libc::close(fd);
+            libc::munmap(umem_area, umem_size);
         })?;
         tracing::debug!(
             src_mac = %format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]),
@@ -380,12 +375,9 @@ impl AfXdpSender {
         );
 
         // Get ring mmap offsets from kernel
-        let off = Self::get_mmap_offsets(fd).map_err(|e| {
-            unsafe {
-                libc::close(fd);
-                libc::munmap(umem_area, umem_size);
-            }
-            e
+        let off = Self::get_mmap_offsets(fd).inspect_err(|_| unsafe {
+            libc::close(fd);
+            libc::munmap(umem_area, umem_size);
         })?;
 
         // Helper: round up to page boundary
@@ -394,48 +386,39 @@ impl AfXdpSender {
         // Mmap all four rings. Fill/completion rings hold u64 addresses (8 bytes each);
         // TX/RX rings hold xdp_desc structs (16 bytes each).
         let fill_mmap_size = page_align(off.fr.desc as usize + ring_size as usize * 8);
-        let fill_ring =
-            Self::mmap_ring(fd, XDP_UMEM_PGOFF_FILL_RING, fill_mmap_size).map_err(|e| {
-                unsafe {
-                    libc::close(fd);
-                    libc::munmap(umem_area, umem_size);
-                }
-                e
-            })?;
+        let fill_ring = Self::mmap_ring(fd, XDP_UMEM_PGOFF_FILL_RING, fill_mmap_size).inspect_err(
+            |_| unsafe {
+                libc::close(fd);
+                libc::munmap(umem_area, umem_size);
+            },
+        )?;
 
         let comp_mmap_size = page_align(off.cr.desc as usize + ring_size as usize * 8);
         let comp_ring = Self::mmap_ring(fd, XDP_UMEM_PGOFF_COMPLETION_RING, comp_mmap_size)
-            .map_err(|e| {
-                unsafe {
-                    libc::munmap(fill_ring, fill_mmap_size);
-                    libc::close(fd);
-                    libc::munmap(umem_area, umem_size);
-                }
-                e
+            .inspect_err(|_| unsafe {
+                libc::munmap(fill_ring, fill_mmap_size);
+                libc::close(fd);
+                libc::munmap(umem_area, umem_size);
             })?;
 
         let tx_mmap_size = page_align(off.tx.desc as usize + ring_size as usize * 16);
-        let tx_ring = Self::mmap_ring(fd, XDP_PGOFF_TX_RING, tx_mmap_size).map_err(|e| {
-            unsafe {
+        let tx_ring =
+            Self::mmap_ring(fd, XDP_PGOFF_TX_RING, tx_mmap_size).inspect_err(|_| unsafe {
                 libc::munmap(comp_ring, comp_mmap_size);
                 libc::munmap(fill_ring, fill_mmap_size);
                 libc::close(fd);
                 libc::munmap(umem_area, umem_size);
-            }
-            e
-        })?;
+            })?;
 
         let rx_mmap_size = page_align(off.rx.desc as usize + ring_size as usize * 16);
-        let rx_ring = Self::mmap_ring(fd, XDP_PGOFF_RX_RING, rx_mmap_size).map_err(|e| {
-            unsafe {
+        let rx_ring =
+            Self::mmap_ring(fd, XDP_PGOFF_RX_RING, rx_mmap_size).inspect_err(|_| unsafe {
                 libc::munmap(tx_ring, tx_mmap_size);
                 libc::munmap(comp_ring, comp_mmap_size);
                 libc::munmap(fill_ring, fill_mmap_size);
                 libc::close(fd);
                 libc::munmap(umem_area, umem_size);
-            }
-            e
-        })?;
+            })?;
 
         // Pre-populate the fill ring with RX frame addresses (second half of UMEM).
         // CRITICAL: without this the kernel has nowhere to put redirected packets

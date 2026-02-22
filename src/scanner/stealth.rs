@@ -159,12 +159,13 @@ impl StealthProfile {
 }
 
 /// Pacing profile controlling scan speed and stealth level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PacingProfile {
     /// 5ms delay, 0.1 jitter, batch=100 — lab/authorized testing.
     Aggressive,
     /// 50ms delay, 0.3 jitter, batch=20 — default for most scans.
+    #[default]
     Normal,
     /// 150ms delay, 0.6 jitter, batch=10 — production network monitoring.
     Stealthy,
@@ -232,12 +233,6 @@ impl PacingProfile {
         profile.probe_delay_ms = self.delay_ms();
         profile.probe_jitter_pct = self.jitter_pct();
         profile.inter_batch_delay_ms = self.inter_batch_delay_ms();
-    }
-}
-
-impl Default for PacingProfile {
-    fn default() -> Self {
-        Self::Normal
     }
 }
 

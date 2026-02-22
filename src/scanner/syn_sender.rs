@@ -902,7 +902,7 @@ mod tests {
 
         let probe = result.unwrap();
         assert_eq!(probe.dst_port, 80);
-        assert!(probe.src_port >= 49152 && probe.src_port <= 65535);
+        assert!(probe.src_port >= 49152);
 
         // Verify packet was sent via the mock sender
         let sent = scanner.sender.as_ref().unwrap();

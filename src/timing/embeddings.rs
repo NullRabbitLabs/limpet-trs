@@ -67,10 +67,10 @@ impl FeatureVector {
         // 30-39: Higher moments + 7 reserved zeros
         // Include CV prominently as it's a key pattern discriminator
         vec.extend_from_slice(&[self.skewness, self.kurtosis, self.cv]);
-        vec.extend(std::iter::repeat(0.0).take(7));
+        vec.extend(std::iter::repeat_n(0.0, 7));
 
         // 40-63: Reserved for future expansion
-        vec.extend(std::iter::repeat(0.0).take(24));
+        vec.extend(std::iter::repeat_n(0.0, 24));
 
         // Final L2 normalization for cosine similarity
         l2_normalize(&mut vec);
@@ -191,7 +191,7 @@ pub fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
 }
 
 /// L2-normalize a vector in place.
-fn l2_normalize(vec: &mut Vec<f64>) {
+fn l2_normalize(vec: &mut [f64]) {
     let magnitude: f64 = vec.iter().map(|x| x * x).sum::<f64>().sqrt();
 
     if magnitude > 0.0 {

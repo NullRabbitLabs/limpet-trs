@@ -541,7 +541,7 @@ mod tests {
         if let Ok(SocketAddr::V6(_)) = addr {
             // If ::1 resolves to IPv6, the function would return an error
             // We can't call collect_timing_samples_raw without BPF, but verify the logic
-            assert!(true, "IPv6 address correctly identified");
+            // IPv6 address correctly identified — no further assertion needed
         }
     }
 
