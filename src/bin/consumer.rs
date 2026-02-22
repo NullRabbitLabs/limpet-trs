@@ -464,11 +464,11 @@ async fn ensure_group(
     }
 }
 
-/// Parse a single message payload (the "payload" field value) from an
-/// XREADGROUP response entry.
+/// Parse a single message payload from an XREADGROUP response entry.
+/// The orchestrator writes the JSON body under the "data" field.
 fn extract_payload(entry: &[(String, redis::Value)]) -> Option<String> {
     for (field, val) in entry {
-        if field == "payload" {
+        if field == "data" {
             if let redis::Value::BulkString(bytes) = val {
                 return String::from_utf8(bytes.clone()).ok();
             }
