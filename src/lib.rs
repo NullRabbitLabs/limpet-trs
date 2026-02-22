@@ -4,6 +4,7 @@
 //! ML-ready feature extraction. Usable as a library or via the CLI / MCP server.
 
 pub mod cli;
+#[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod scanner;
 pub mod timing;

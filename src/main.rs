@@ -8,6 +8,7 @@
 
 use clap::Parser;
 use limpet::cli::{self, Cli, Commands, OutputFmt, StealthArg};
+#[cfg(feature = "mcp")]
 use limpet::mcp;
 use tracing_subscriber::EnvFilter;
 
@@ -22,6 +23,7 @@ async fn main() {
     let cli = Cli::parse();
 
     // MCP server mode — ignores all other flags
+    #[cfg(feature = "mcp")]
     if cli.mcp {
         if let Err(e) = mcp::run_mcp_server().await {
             eprintln!("MCP server error: {e}");
