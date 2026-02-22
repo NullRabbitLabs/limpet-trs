@@ -25,6 +25,9 @@ path = "src/bin/consumer.rs"
 name = "limpet"
 path = "src/lib.rs"
 
+[features]
+mcp = ["dep:rmcp", "dep:schemars"]
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
@@ -43,9 +46,6 @@ libc = "0.2"
 clap = { version = "4", features = ["derive"] }
 rmcp = { version = "0.1", features = ["server", "macros", "transport-io"], optional = true }
 schemars = { version = "0.8", optional = true }
-
-[features]
-mcp = ["dep:rmcp", "dep:schemars"]
 axum = "0.8"
 redis = { version = "0.27", features = ["tokio-comp", "streams"] }
 
@@ -54,5 +54,3 @@ libbpf-cargo = "0.24"
 
 [dev-dependencies]
 tokio-test = "0.4"
-
-
