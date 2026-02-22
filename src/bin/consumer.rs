@@ -70,8 +70,7 @@ impl ConsumerConfig {
                 .and_then(|h| h.into_string().ok())
                 .unwrap_or_else(|| format!("limpet-consumer-{}", std::process::id()))
         });
-        let worker_node = std::env::var("WORKER_NODE")
-            .unwrap_or_else(|_| consumer_name.clone());
+        let worker_node = std::env::var("WORKER_NODE").unwrap_or_else(|_| consumer_name.clone());
 
         Self {
             redis_url: std::env::var("REDIS_URL")
@@ -259,7 +258,15 @@ async fn run_discovery(
     {
         let _ = (pacing, bpf_state, start);
         tracing::warn!("XDP unavailable on non-Linux — falling back to TCP connect scan");
-        return run_connect_scan(target_ip, port_spec, timeout_ms, max_ports, target_hostname, request_id).await;
+        return run_connect_scan(
+            target_ip,
+            port_spec,
+            timeout_ms,
+            max_ports,
+            target_hostname,
+            request_id,
+        )
+        .await;
     }
 
     #[cfg(target_os = "linux")]
@@ -270,7 +277,15 @@ async fn run_discovery(
             Some(arc) => arc,
             None => {
                 tracing::warn!("BPF unavailable — falling back to TCP connect scan");
-                return run_connect_scan(target_ip, port_spec, timeout_ms, max_ports, target_hostname, request_id).await;
+                return run_connect_scan(
+                    target_ip,
+                    port_spec,
+                    timeout_ms,
+                    max_ports,
+                    target_hostname,
+                    request_id,
+                )
+                .await;
             }
         };
 
@@ -299,7 +314,15 @@ async fn run_discovery(
             }
             Err(e) => {
                 tracing::warn!(error = %e, "AF_XDP unavailable — falling back to TCP connect scan");
-                return run_connect_scan(target_ip, port_spec, timeout_ms, max_ports, target_hostname, request_id).await;
+                return run_connect_scan(
+                    target_ip,
+                    port_spec,
+                    timeout_ms,
+                    max_ports,
+                    target_hostname,
+                    request_id,
+                )
+                .await;
             }
         };
 
@@ -468,7 +491,13 @@ async fn discovery_consumer_loop(cfg: ConsumerConfig, bpf: Arc<BpfState>) {
         .await
         .expect("failed to connect to Redis for discovery consumer");
 
-    if let Err(e) = ensure_group(&mut conn, &cfg.discovery_request_stream, &cfg.discovery_group).await {
+    if let Err(e) = ensure_group(
+        &mut conn,
+        &cfg.discovery_request_stream,
+        &cfg.discovery_group,
+    )
+    .await
+    {
         tracing::error!("{e}");
         return;
     }
@@ -482,11 +511,15 @@ async fn discovery_consumer_loop(cfg: ConsumerConfig, bpf: Arc<BpfState>) {
 
     loop {
         let read_result: redis::RedisResult<redis::Value> = redis::cmd("XREADGROUP")
-            .arg("GROUP").arg(&cfg.discovery_group)
+            .arg("GROUP")
+            .arg(&cfg.discovery_group)
             .arg(&cfg.consumer_name)
-            .arg("COUNT").arg(1)
-            .arg("BLOCK").arg(5000)
-            .arg("STREAMS").arg(&cfg.discovery_request_stream)
+            .arg("COUNT")
+            .arg(1)
+            .arg("BLOCK")
+            .arg(5000)
+            .arg("STREAMS")
+            .arg(&cfg.discovery_request_stream)
             .arg(">")
             .query_async(&mut conn)
             .await;
@@ -699,11 +732,15 @@ async fn timing_consumer_loop(cfg: ConsumerConfig, bpf: Arc<BpfState>) {
 
     loop {
         let read_result: redis::RedisResult<redis::Value> = redis::cmd("XREADGROUP")
-            .arg("GROUP").arg(&cfg.timing_group)
+            .arg("GROUP")
+            .arg(&cfg.timing_group)
             .arg(&cfg.consumer_name)
-            .arg("COUNT").arg(1)
-            .arg("BLOCK").arg(5000)
-            .arg("STREAMS").arg(&cfg.timing_request_stream)
+            .arg("COUNT")
+            .arg(1)
+            .arg("BLOCK")
+            .arg(5000)
+            .arg("STREAMS")
+            .arg(&cfg.timing_request_stream)
             .arg(">")
             .query_async(&mut conn)
             .await;
@@ -830,18 +867,17 @@ fn parse_xreadgroup_response(val: redis::Value) -> Option<Vec<(String, String)>>
             };
 
             let fields: Vec<(String, redis::Value)> = match &msg_parts[1] {
-                redis::Value::Array(arr) if arr.len() % 2 == 0 => {
-                    arr.chunks(2)
-                        .filter_map(|chunk| {
-                            let key = match &chunk[0] {
-                                redis::Value::BulkString(b) => String::from_utf8_lossy(b).to_string(),
-                                redis::Value::SimpleString(s) => s.clone(),
-                                _ => return None,
-                            };
-                            Some((key, chunk[1].clone()))
-                        })
-                        .collect()
-                }
+                redis::Value::Array(arr) if arr.len() % 2 == 0 => arr
+                    .chunks(2)
+                    .filter_map(|chunk| {
+                        let key = match &chunk[0] {
+                            redis::Value::BulkString(b) => String::from_utf8_lossy(b).to_string(),
+                            redis::Value::SimpleString(s) => s.clone(),
+                            _ => return None,
+                        };
+                        Some((key, chunk[1].clone()))
+                    })
+                    .collect(),
                 _ => continue,
             };
 
@@ -1049,7 +1085,10 @@ mod tests {
         assert_eq!(v["base_request_id"], "base-abc");
         assert_eq!(v["shard_index"], 1);
         assert_eq!(v["total_shards"], 2);
-        assert!(v.get("shard_meta").is_none(), "shard_meta must not be a nested key");
+        assert!(
+            v.get("shard_meta").is_none(),
+            "shard_meta must not be a nested key"
+        );
     }
 
     #[test]
