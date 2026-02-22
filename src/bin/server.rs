@@ -46,15 +46,21 @@ use limpet::{PortSpec, PortState, ScanResult, ScannedPort, TimingRequest};
 // Shared server state
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// BPF state resolved once at server startup and shared across all requests.
+#[derive(Clone)]
+struct BpfState {
+    /// Network interface resolved at startup (e.g. "eth0").
+    interface: String,
+    /// Backend string: "xdp", "xdp-hybrid", or "connect".
+    backend_str: String,
+    /// BPF timing backend. None = connect-scan fallback.
+    collector: Option<Arc<Mutex<limpet::BpfTimingCollector>>>,
+}
+
 #[derive(Clone)]
 struct ServerState {
     worker_node: String,
-    /// Network interface resolved at startup (e.g. "eth0").
-    resolved_interface: String,
-    /// Backend string resolved at startup: "xdp", "xdp-hybrid", or "connect".
-    backend_str: String,
-    /// BPF timing backend, initialised once at startup. None = connect-scan fallback.
-    bpf: Option<Arc<Mutex<limpet::BpfTimingCollector>>>,
+    bpf: BpfState,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -82,6 +88,7 @@ struct DiscoveryRequest {
     ports: PortSpecWire,
     timeout_ms: u64,
     #[serde(default)]
+    #[allow(dead_code)] // part of the wire format; unused server-side
     sample_count: u32,
     pacing_profile: Option<String>,
     #[serde(default)]
@@ -244,9 +251,7 @@ async fn handle_discovery(
         pacing,
         req.timeout_ms as u32,
         req.max_ports,
-        &state.resolved_interface,
-        state.bpf.clone(),
-        &state.backend_str,
+        &state.bpf,
     )
     .await
     {
@@ -279,7 +284,7 @@ async fn handle_discovery(
                 request_id: req.request_id,
                 scan_id: req.scan_id,
                 target_ip: req.target_ip,
-                target_hostname: req.target_hostname.or_else(|| scan_result.target_hostname),
+                target_hostname: req.target_hostname.or(scan_result.target_hostname),
                 ports_scanned,
                 port_results,
                 estimated_duration_ms: scan_result.duration_ms,
@@ -337,7 +342,7 @@ async fn handle_timing(
         "timing request received"
     );
 
-    let mut result = collect_timing_samples(&req, state.bpf.clone()).await;
+    let mut result = collect_timing_samples(&req, state.bpf.collector.clone()).await;
     result.worker_node = Some(state.worker_node);
     result.source_ip = detect_own_ip();
 
@@ -384,9 +389,7 @@ async fn run_discovery(
     pacing: PacingProfile,
     timeout_ms: u32,
     max_ports: Option<u32>,
-    iface: &str,
-    bpf: Option<Arc<Mutex<limpet::BpfTimingCollector>>>,
-    backend_str: &str,
+    bpf_state: &BpfState,
 ) -> Result<ScanResult, String> {
     let start = Instant::now();
 
@@ -416,7 +419,7 @@ async fn run_discovery(
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (pacing, iface, bpf, backend_str);
+        let _ = (pacing, bpf_state);
         tracing::warn!("XDP unavailable on non-Linux — falling back to TCP connect scan");
         return run_connect_scan(
             target_ip,
@@ -432,10 +435,9 @@ async fn run_discovery(
     #[cfg(target_os = "linux")]
     {
         use limpet::scanner::afxdp_sender::{AfXdpSend, AfXdpSender};
-        use limpet::scanner::raw_socket_sender::RawSocketSender;
 
         // If BPF is unavailable (e.g. Docker environment), use connect scan.
-        let bpf_arc = match bpf {
+        let bpf_arc = match bpf_state.collector.clone() {
             Some(arc) => arc,
             None => {
                 tracing::warn!("BPF unavailable — falling back to TCP connect scan");
@@ -464,7 +466,8 @@ async fn run_discovery(
         let batch_size = pacing.batch_size();
         let timeout = Duration::from_millis(timeout_ms as u64);
 
-        let xdp_sender: Box<dyn AfXdpSend> = match AfXdpSender::new(iface, 0, src_ip) {
+        let xdp_sender: Box<dyn AfXdpSend> = match AfXdpSender::new(&bpf_state.interface, 0, src_ip)
+        {
             Ok(sender) => {
                 let bpf_guard = bpf_arc.lock().await;
                 if let Err(e) = bpf_guard.register_xsk_fd(sender.fd()) {
@@ -525,7 +528,7 @@ async fn run_discovery(
             target_hostname,
             ports: scanned_ports,
             duration_ms,
-            backend: backend_str.to_string(),
+            backend: bpf_state.backend_str.clone(),
             scanned_at: Utc::now(),
             error: None,
         })
@@ -653,32 +656,30 @@ async fn main() {
 
     // Initialise BPF timing backend once at startup.
     // On macOS / Docker Desktop this will fail and we fall back to connect scan for all requests.
-    let (bpf, backend_str, resolved_interface) = match limpet::detect_timing_backend(&interface) {
+    let bpf = match limpet::detect_timing_backend(&interface) {
         Ok((backend, collector)) => {
             let backend_str = backend.as_str().to_string();
-            let resolved_iface = collector.interface().to_string();
-            tracing::info!(backend = %backend_str, interface = %resolved_iface, "BPF timing backend initialised");
-            (
-                Some(Arc::new(Mutex::new(collector))),
+            let iface = collector.interface().to_string();
+            tracing::info!(backend = %backend_str, interface = %iface, "BPF timing backend initialised");
+            BpfState {
+                interface: iface,
                 backend_str,
-                resolved_iface,
-            )
+                collector: Some(Arc::new(Mutex::new(collector))),
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "BPF timing backend unavailable — connect-scan fallback active");
-            let resolved_iface = interface.unwrap_or_else(|| "eth0".to_string());
-            (None, "connect".to_string(), resolved_iface)
+            BpfState {
+                interface: interface.unwrap_or_else(|| "eth0".to_string()),
+                backend_str: "connect".to_string(),
+                collector: None,
+            }
         }
     };
 
     tracing::info!(worker_node = %worker_node, port = port, "limpet-server starting");
 
-    let state = ServerState {
-        worker_node,
-        resolved_interface,
-        backend_str,
-        bpf,
-    };
+    let state = ServerState { worker_node, bpf };
 
     let app = Router::new()
         .route("/v1/discovery", post(handle_discovery))
@@ -768,24 +769,23 @@ mod tests {
     }
 
     #[test]
-    fn test_server_state_backend_str_connect_when_bpf_none() {
-        // Verify the connect-scan fallback path: bpf=None, backend_str="connect".
+    fn test_bpf_state_backend_str_connect_when_collector_none() {
+        // Verify the connect-scan fallback path: collector=None, backend_str="connect".
         // This is the expected state in Docker / macOS where BPF fails at startup.
-        let state = ServerState {
-            worker_node: "test".to_string(),
-            resolved_interface: "eth0".to_string(),
+        let bpf = BpfState {
+            interface: "eth0".to_string(),
             backend_str: "connect".to_string(),
-            bpf: None,
+            collector: None,
         };
-        assert_eq!(state.backend_str, "connect");
-        assert!(state.bpf.is_none());
+        assert_eq!(bpf.backend_str, "connect");
+        assert!(bpf.collector.is_none());
     }
 
     #[test]
-    fn test_server_state_resolved_interface_falls_back_to_eth0() {
-        // When LIMPET_INTERFACE is not set and BPF fails, resolved_interface is "eth0".
-        let interface: Option<String> = None;
-        let resolved = interface.unwrap_or_else(|| "eth0".to_string());
+    fn test_bpf_state_interface_falls_back_to_eth0() {
+        // When LIMPET_INTERFACE is not set and BPF fails, interface defaults to "eth0".
+        let env_interface: Option<String> = None;
+        let resolved = env_interface.unwrap_or_else(|| "eth0".to_string());
         assert_eq!(resolved, "eth0");
     }
 }
