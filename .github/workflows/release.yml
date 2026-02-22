@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  release:
+    name: Build & publish latest
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libbpf-dev \
+            linux-headers-$(uname -r) \
+            linux-libc-dev \
+            clang \
+            llvm \
+            libelf-dev \
+            zlib1g-dev
+          sudo ln -sfn /usr/include/x86_64-linux-gnu/asm /usr/include/asm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binaries
+        run: cargo build --release --bins
+
+      - name: Strip binaries
+        run: |
+          strip target/release/limpet
+          strip target/release/limpet-server
+          strip target/release/limpet-consumer
+
+      - name: Package binaries
+        run: |
+          SHA=${{ github.event.workflow_run.head_sha }}
+          SHORT=${SHA::7}
+          tar -czf limpet-linux-amd64-${SHORT}.tar.gz \
+            -C target/release limpet limpet-server limpet-consumer
+
+      - name: Publish rolling latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=${{ github.event.workflow_run.head_sha }}
+          SHORT=${SHA::7}
+          ARCHIVE="limpet-linux-amd64-${SHORT}.tar.gz"
+
+          # Delete and recreate the 'latest' tag so it points to HEAD
+          gh release delete latest --yes 2>/dev/null || true
+          git push origin :refs/tags/latest 2>/dev/null || true
+
+          gh release create latest \
+            --title "Latest build (${SHORT})" \
+            --notes "Automated build from commit ${SHA}." \
+            --prerelease \
+            "${ARCHIVE}"
