@@ -8,9 +8,7 @@
 //! Start with: `limpet --mcp`
 //! Compatible with Claude Desktop and any MCP client.
 
-use rmcp::model::{
-    Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
-};
+use rmcp::model::{Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo};
 use rmcp::tool;
 use rmcp::{Error as McpError, ServerHandler};
 use schemars::JsonSchema;
@@ -97,33 +95,32 @@ pub struct LimpetMcpServer;
 #[tool(tool_box)]
 impl LimpetMcpServer {
     /// Discover open ports on a target host using XDP kernel-bypass SYN scanning.
-    #[tool(description = "Discover open ports on a target host using XDP kernel-bypass SYN scanning with nanosecond RTT precision. Returns port states (open/closed/filtered/firewalled) with timing data.")]
+    #[tool(
+        description = "Discover open ports on a target host using XDP kernel-bypass SYN scanning with nanosecond RTT precision. Returns port states (open/closed/filtered/firewalled) with timing data."
+    )]
     async fn scan_ports(
         &self,
         #[tool(aggr)] input: ScanPortsInput,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        let port_spec = PortSpec::parse(&input.ports)
-            .map_err(|e| McpError::invalid_params(e, None))?;
+        let port_spec =
+            PortSpec::parse(&input.ports).map_err(|e| McpError::invalid_params(e, None))?;
 
-        let pacing = parse_pacing(&input.stealth)
-            .map_err(|e| McpError::invalid_params(e, None))?;
+        let pacing = parse_pacing(&input.stealth).map_err(|e| McpError::invalid_params(e, None))?;
 
-        let result = crate::cli::run_scan(
-            &input.target,
-            port_spec,
-            pacing,
-            input.timeout_ms,
-            None,
-        )
-        .await
-        .map_err(|e| McpError::internal_error(e, None))?;
+        let result = crate::cli::run_scan(&input.target, port_spec, pacing, input.timeout_ms, None)
+            .await
+            .map_err(|e| McpError::internal_error(e, None))?;
 
         let json = crate::cli::format_json(&result);
-        Ok(rmcp::model::CallToolResult::success(vec![Content::text(json)]))
+        Ok(rmcp::model::CallToolResult::success(vec![Content::text(
+            json,
+        )]))
     }
 
     /// Measure TCP RTT to a specific port with nanosecond precision via eBPF timestamps.
-    #[tool(description = "Measure TCP RTT to a specific port with nanosecond precision via eBPF kernel timestamps. Returns timing statistics and raw samples.")]
+    #[tool(
+        description = "Measure TCP RTT to a specific port with nanosecond precision via eBPF kernel timestamps. Returns timing statistics and raw samples."
+    )]
     async fn time_port(
         &self,
         #[tool(aggr)] input: TimePortInput,
@@ -142,11 +139,15 @@ impl LimpetMcpServer {
         let json = serde_json::to_string_pretty(&result)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(rmcp::model::CallToolResult::success(vec![Content::text(json)]))
+        Ok(rmcp::model::CallToolResult::success(vec![Content::text(
+            json,
+        )]))
     }
 
     /// Extract ML feature vector from timing samples for service fingerprinting.
-    #[tool(description = "Extract a 64-dimensional ML feature vector from TCP RTT timing samples for service fingerprinting and similarity search via eBPF timestamps.")]
+    #[tool(
+        description = "Extract a 64-dimensional ML feature vector from TCP RTT timing samples for service fingerprinting and similarity search via eBPF timestamps."
+    )]
     async fn get_timing_features(
         &self,
         #[tool(aggr)] input: GetTimingFeaturesInput,
@@ -172,7 +173,9 @@ impl LimpetMcpServer {
         let json = serde_json::to_string_pretty(&result)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(rmcp::model::CallToolResult::success(vec![Content::text(json)]))
+        Ok(rmcp::model::CallToolResult::success(vec![Content::text(
+            json,
+        )]))
     }
 }
 
@@ -183,9 +186,7 @@ impl ServerHandler for LimpetMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .build(),
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation {
                 name: "limpet".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -221,7 +222,7 @@ fn parse_pacing(s: &str) -> Result<crate::scanner::stealth::PacingProfile, Strin
 
 /// Start the MCP server on stdio.
 pub async fn run_mcp_server() -> Result<(), Box<dyn std::error::Error>> {
-    use rmcp::{ServiceExt, transport::stdio};
+    use rmcp::{transport::stdio, ServiceExt};
 
     let service = LimpetMcpServer;
     let server = service.serve(stdio()).await?;

@@ -36,11 +36,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use limpet::{PortSpec, PortState, ScanResult, ScannedPort, TimingRequest};
 use limpet::scanner::collector::DiscoveryCollector;
 use limpet::scanner::stealth::{PacingProfile, StealthProfile};
 use limpet::scanner::syn_sender::{detect_source_ip, SynScanner};
 use limpet::timing::collect_timing_samples;
+use limpet::{PortSpec, PortState, ScanResult, ScannedPort, TimingRequest};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared server state
@@ -279,8 +279,7 @@ async fn handle_discovery(
                 request_id: req.request_id,
                 scan_id: req.scan_id,
                 target_ip: req.target_ip,
-                target_hostname: req.target_hostname
-                    .or_else(|| scan_result.target_hostname),
+                target_hostname: req.target_hostname.or_else(|| scan_result.target_hostname),
                 ports_scanned,
                 port_results,
                 estimated_duration_ms: scan_result.duration_ms,
@@ -419,7 +418,15 @@ async fn run_discovery(
     {
         let _ = (pacing, iface, bpf, backend_str);
         tracing::warn!("XDP unavailable on non-Linux — falling back to TCP connect scan");
-        return run_connect_scan(target_ip, port_spec, timeout_ms, max_ports, target_hostname, request_id).await;
+        return run_connect_scan(
+            target_ip,
+            port_spec,
+            timeout_ms,
+            max_ports,
+            target_hostname,
+            request_id,
+        )
+        .await;
     }
 
     #[cfg(target_os = "linux")]
@@ -432,12 +439,20 @@ async fn run_discovery(
             Some(arc) => arc,
             None => {
                 tracing::warn!("BPF unavailable — falling back to TCP connect scan");
-                return run_connect_scan(target_ip, port_spec, timeout_ms, max_ports, target_hostname, request_id).await;
+                return run_connect_scan(
+                    target_ip,
+                    port_spec,
+                    timeout_ms,
+                    max_ports,
+                    target_hostname,
+                    request_id,
+                )
+                .await;
             }
         };
 
-        let src_ip = detect_source_ip(target_ip)
-            .map_err(|e| format!("source IP detection failed: {e}"))?;
+        let src_ip =
+            detect_source_ip(target_ip).map_err(|e| format!("source IP detection failed: {e}"))?;
 
         let mut stealth = StealthProfile::linux_6x_default();
         pacing.apply_to(&mut stealth);
@@ -460,7 +475,15 @@ async fn run_discovery(
             }
             Err(e) => {
                 tracing::warn!(error = %e, "AF_XDP unavailable — falling back to TCP connect scan");
-                return run_connect_scan(target_ip, port_spec, timeout_ms, max_ports, target_hostname, request_id).await;
+                return run_connect_scan(
+                    target_ip,
+                    port_spec,
+                    timeout_ms,
+                    max_ports,
+                    target_hostname,
+                    request_id,
+                )
+                .await;
             }
         };
 
@@ -599,14 +622,12 @@ fn detect_own_ip() -> Option<String> {
 }
 
 fn default_worker_node() -> String {
-    std::env::var("WORKER_NODE")
-        .ok()
-        .unwrap_or_else(|| {
-            nix::unistd::gethostname()
-                .ok()
-                .and_then(|h| h.into_string().ok())
-                .unwrap_or_else(|| format!("limpet-{}", std::process::id()))
-        })
+    std::env::var("WORKER_NODE").ok().unwrap_or_else(|| {
+        nix::unistd::gethostname()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+            .unwrap_or_else(|| format!("limpet-{}", std::process::id()))
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -617,8 +638,7 @@ fn default_worker_node() -> String {
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -638,7 +658,11 @@ async fn main() {
             let backend_str = backend.as_str().to_string();
             let resolved_iface = collector.interface().to_string();
             tracing::info!(backend = %backend_str, interface = %resolved_iface, "BPF timing backend initialised");
-            (Some(Arc::new(Mutex::new(collector))), backend_str, resolved_iface)
+            (
+                Some(Arc::new(Mutex::new(collector))),
+                backend_str,
+                resolved_iface,
+            )
         }
         Err(e) => {
             tracing::warn!(error = %e, "BPF timing backend unavailable — connect-scan fallback active");
@@ -669,9 +693,7 @@ async fn main() {
 
     tracing::info!(addr = %addr, "limpet-server listening");
 
-    axum::serve(listener, app)
-        .await
-        .expect("server error");
+    axum::serve(listener, app).await.expect("server error");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -699,7 +721,13 @@ mod tests {
             value: Some(serde_json::json!({"start": 1, "end": 1024})),
         };
         let result = wire_to_port_spec(&spec).unwrap();
-        assert_eq!(result, PortSpec::Range { start: 1, end: 1024 });
+        assert_eq!(
+            result,
+            PortSpec::Range {
+                start: 1,
+                end: 1024
+            }
+        );
     }
 
     #[test]
