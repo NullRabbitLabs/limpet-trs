@@ -17,6 +17,10 @@ path = "src/main.rs"
 name = "limpet-server"
 path = "src/bin/server.rs"
 
+[[bin]]
+name = "limpet-consumer"
+path = "src/bin/consumer.rs"
+
 [lib]
 name = "limpet"
 path = "src/lib.rs"
@@ -40,6 +44,7 @@ clap = { version = "4", features = ["derive"] }
 rmcp = { version = "0.1", features = ["server", "macros", "transport-io"] }
 schemars = "0.8"
 axum = "0.8"
+redis = { version = "0.27", features = ["tokio-comp", "streams"] }
 
 [build-dependencies]
 libbpf-cargo = "0.24"
