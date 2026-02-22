@@ -2,12 +2,10 @@
 //!
 //! Supports pretty (nmap-style) and JSON output formats.
 
-use std::net::Ipv4Addr;
-
 use crate::{PortState, ScanResult, ScannedPort};
 
 /// Format a scan result as nmap-style pretty text.
-pub fn format_pretty(result: &ScanResult, target_input: &str) -> String {
+pub fn format_pretty(result: &ScanResult, _target_input: &str) -> String {
     let mut out = String::new();
 
     let version = env!("CARGO_PKG_VERSION");

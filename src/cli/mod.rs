@@ -18,7 +18,7 @@ use crate::scanner::collector::DiscoveryCollector;
 use crate::scanner::stealth::{PacingProfile, StealthProfile};
 use crate::scanner::syn_sender::{detect_source_ip, SynScanner};
 use crate::timing::collect_timing_samples;
-use crate::{PortSpec, PortState, ScanResult, ScannedPort, TimingBackend, TimingRequest};
+use crate::{PortSpec, ScanResult, ScannedPort, TimingRequest};
 
 pub use output::{format_json, format_pretty};
 
