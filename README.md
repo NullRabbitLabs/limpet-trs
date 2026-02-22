@@ -312,6 +312,18 @@ limpet/
 
 ---
 
+## Context
+
+Limpet is the open-source scanning component of the [NullRabbit](https://nullrabbit.ai) platform — autonomous defence for validator infrastructure and decentralised networks.
+
+The timing embeddings and ML-ready output from Limpet feed into NullRabbit's proprietary threat analysis and behavioural baseline systems. For the governance framework behind autonomous defensive action, see:
+
+> **On Earned Autonomy: Delegating Network-Lethal Authority to Machines**
+> Simon Morley, NullRabbit Labs, January 2026
+> [DOI: 10.5281/zenodo.18406828](https://doi.org/10.5281/zenodo.18406828)
+
+---
+
 ## License
 
 MIT
