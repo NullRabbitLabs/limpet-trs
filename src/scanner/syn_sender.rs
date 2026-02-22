@@ -282,7 +282,7 @@ impl SynScanner {
 
         // --- IPv4 header (bytes 0–19) ---
         packet[0] = 0x45; // Version=4, IHL=5 (20 bytes)
-        // byte 1: DSCP/ECN = 0
+                          // byte 1: DSCP/ECN = 0
         packet[2] = (ip_total_len >> 8) as u8;
         packet[3] = ip_total_len as u8;
         if self.profile.ip_id_random {
@@ -295,7 +295,7 @@ impl SynScanner {
         }
         packet[8] = self.profile.jittered_ttl();
         packet[9] = 0x06; // TCP
-        // bytes 10–11: IP checksum (computed below)
+                          // bytes 10–11: IP checksum (computed below)
         packet[12..16].copy_from_slice(&src_ip.octets());
         packet[16..20].copy_from_slice(&target_ip.octets());
 
@@ -387,7 +387,7 @@ impl SynScanner {
         // acknowledgement = 0
         // data offset = 5 (20 bytes / 4 words), upper nibble
         packet[32] = 5 << 4; // 0x50
-        // TCP flags: RST = 0x04
+                             // TCP flags: RST = 0x04
         packet[33] = 0x04;
         // window = 0 (already zeroed)
         // urgent pointer = 0
@@ -725,7 +725,10 @@ mod tests {
         let (packet, _isn) =
             scanner.build_syn_packet(src_ip, Ipv4Addr::new(10, 0, 0, 1), 50000, 80);
         let ip_checksum = u16::from_be_bytes([packet[10], packet[11]]);
-        assert_ne!(ip_checksum, 0, "IP header checksum must be computed (non-zero)");
+        assert_ne!(
+            ip_checksum, 0,
+            "IP header checksum must be computed (non-zero)"
+        );
     }
 
     #[test]
@@ -819,7 +822,10 @@ mod tests {
         let src_ip = Ipv4Addr::new(192, 168, 1, 100);
         let (packet, isn) = scanner.build_syn_packet(src_ip, Ipv4Addr::new(10, 0, 0, 1), 50000, 80);
         let pkt_seq = u32::from_be_bytes([packet[24], packet[25], packet[26], packet[27]]);
-        assert_eq!(pkt_seq, isn, "packet sequence number must match returned ISN");
+        assert_eq!(
+            pkt_seq, isn,
+            "packet sequence number must match returned ISN"
+        );
     }
 
     #[test]
@@ -860,8 +866,7 @@ mod tests {
         let profile = StealthProfile::linux_6x_default();
         let scanner = SynScanner::new(profile);
         let src_ip = Ipv4Addr::new(192, 168, 1, 100);
-        let (packet, _) =
-            scanner.build_syn_packet(src_ip, Ipv4Addr::new(10, 0, 0, 1), 50000, 80);
+        let (packet, _) = scanner.build_syn_packet(src_ip, Ipv4Addr::new(10, 0, 0, 1), 50000, 80);
 
         // Re-compute IP checksum over the header with the checksum field set
         // The one's complement sum of a valid header including its checksum should be 0xFFFF
@@ -873,7 +878,10 @@ mod tests {
         while sum >> 16 != 0 {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
-        assert_eq!(sum as u16, 0xFFFF, "valid IP header checksum verification must yield 0xFFFF");
+        assert_eq!(
+            sum as u16, 0xFFFF,
+            "valid IP header checksum verification must yield 0xFFFF"
+        );
     }
 
     // ==========================================================================
@@ -887,7 +895,10 @@ mod tests {
         let mut scanner = SynScanner::new_with_sender(profile, Box::new(mock));
 
         let result = scanner.send_single_syn(Ipv4Addr::new(10, 0, 0, 2), 80);
-        assert!(result.is_ok(), "send_single_syn should succeed with mock sender");
+        assert!(
+            result.is_ok(),
+            "send_single_syn should succeed with mock sender"
+        );
 
         let probe = result.unwrap();
         assert_eq!(probe.dst_port, 80);
@@ -895,7 +906,10 @@ mod tests {
 
         // Verify packet was sent via the mock sender
         let sent = scanner.sender.as_ref().unwrap();
-        let mock_ref = sent.as_any().downcast_ref::<MockAfXdpSender>().expect("sender must be MockAfXdpSender");
+        let mock_ref = sent
+            .as_any()
+            .downcast_ref::<MockAfXdpSender>()
+            .expect("sender must be MockAfXdpSender");
         assert_eq!(mock_ref.sent_count(), 1, "one packet should have been sent");
     }
 
@@ -905,7 +919,9 @@ mod tests {
         let mock = MockAfXdpSender::with_src_ip(Ipv4Addr::new(10, 0, 0, 1));
         let mut scanner = SynScanner::new_with_sender(profile, Box::new(mock));
 
-        scanner.send_single_syn(Ipv4Addr::new(10, 0, 0, 2), 443).unwrap();
+        scanner
+            .send_single_syn(Ipv4Addr::new(10, 0, 0, 2), 443)
+            .unwrap();
 
         // Access sent packet via the mock's internal state by rebuilding the packet
         // We verify the send_single_syn path produces a valid SYN packet
@@ -964,9 +980,13 @@ mod tests {
         let mut scanner = SynScanner::new_with_sender(profile, Box::new(mock));
 
         assert_eq!(scanner.probe_count(), 0);
-        scanner.send_single_syn(Ipv4Addr::new(10, 0, 0, 2), 80).unwrap();
+        scanner
+            .send_single_syn(Ipv4Addr::new(10, 0, 0, 2), 80)
+            .unwrap();
         assert_eq!(scanner.probe_count(), 1);
-        scanner.send_single_syn(Ipv4Addr::new(10, 0, 0, 2), 443).unwrap();
+        scanner
+            .send_single_syn(Ipv4Addr::new(10, 0, 0, 2), 443)
+            .unwrap();
         assert_eq!(scanner.probe_count(), 2);
     }
 }

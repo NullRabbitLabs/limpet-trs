@@ -12,10 +12,10 @@ use std::net::Ipv4Addr;
 use uuid::Uuid;
 
 // Re-export key backend types for library users.
-pub use timing::xdp::{BpfTimingError, BpfTimingCollector, MockBpfTimingCollector};
-pub use timing::detect_timing_backend;
 pub use scanner::stealth::{PacingProfile, StealthProfile};
 pub use scanner::syn_sender::ScanError;
+pub use timing::detect_timing_backend;
+pub use timing::xdp::{BpfTimingCollector, BpfTimingError, MockBpfTimingCollector};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Port state
@@ -61,7 +61,10 @@ impl PortState {
 
     /// Returns true if the port had any response (open, closed, unreachable, firewalled).
     pub fn had_response(&self) -> bool {
-        matches!(self, Self::Open | Self::Closed | Self::Unreachable | Self::Firewalled)
+        matches!(
+            self,
+            Self::Open | Self::Closed | Self::Unreachable | Self::Firewalled
+        )
     }
 }
 
@@ -147,9 +150,13 @@ impl PortSpec {
         if s.contains('-') && !s.contains(',') {
             let parts: Vec<&str> = s.splitn(2, '-').collect();
             if parts.len() == 2 {
-                let start = parts[0].trim().parse::<u16>()
+                let start = parts[0]
+                    .trim()
+                    .parse::<u16>()
                     .map_err(|_| format!("invalid port range start: '{}'", parts[0]))?;
-                let end = parts[1].trim().parse::<u16>()
+                let end = parts[1]
+                    .trim()
+                    .parse::<u16>()
                     .map_err(|_| format!("invalid port range end: '{}'", parts[1]))?;
                 if end < start {
                     return Err(format!("invalid range: {} > {}", start, end));
@@ -158,8 +165,13 @@ impl PortSpec {
             }
         }
         // Comma-separated list or single port
-        let ports: Result<Vec<u16>, _> = s.split(',')
-            .map(|p| p.trim().parse::<u16>().map_err(|_| format!("invalid port: '{}'", p.trim())))
+        let ports: Result<Vec<u16>, _> = s
+            .split(',')
+            .map(|p| {
+                p.trim()
+                    .parse::<u16>()
+                    .map_err(|_| format!("invalid port: '{}'", p.trim()))
+            })
             .collect();
         Ok(Self::Explicit(ports?))
     }
@@ -460,7 +472,13 @@ mod tests {
     #[test]
     fn test_port_spec_parse_range() {
         let spec = PortSpec::parse("1-1024").unwrap();
-        assert_eq!(spec, PortSpec::Range { start: 1, end: 1024 });
+        assert_eq!(
+            spec,
+            PortSpec::Range {
+                start: 1,
+                end: 1024
+            }
+        );
     }
 
     #[test]
@@ -504,7 +522,14 @@ mod tests {
 
     #[test]
     fn test_port_spec_display() {
-        assert_eq!(PortSpec::Range { start: 1, end: 1024 }.to_string(), "1-1024");
+        assert_eq!(
+            PortSpec::Range {
+                start: 1,
+                end: 1024
+            }
+            .to_string(),
+            "1-1024"
+        );
         assert_eq!(PortSpec::Full.to_string(), "1-65535");
         assert_eq!(PortSpec::Explicit(vec![80, 443]).to_string(), "80,443");
     }

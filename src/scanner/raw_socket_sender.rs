@@ -52,9 +52,7 @@ impl RawSocketSender {
     /// Returns `ScanError::RawSocket` if `socket()` fails (typically missing
     /// `CAP_NET_RAW` or kernel restriction).
     pub fn new(src_ip: Ipv4Addr) -> Result<Self, ScanError> {
-        let fd = unsafe {
-            libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_RAW)
-        };
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_RAW) };
         if fd < 0 {
             return Err(ScanError::RawSocket(format!(
                 "SOCK_RAW/IPPROTO_RAW socket creation failed (requires CAP_NET_RAW): {}",
@@ -239,6 +237,9 @@ mod tests {
             result.err()
         );
         let sender = result.unwrap();
-        assert!(sender.fd >= 0, "fd must be non-negative after successful creation");
+        assert!(
+            sender.fd >= 0,
+            "fd must be non-negative after successful creation"
+        );
     }
 }

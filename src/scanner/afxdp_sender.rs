@@ -245,11 +245,7 @@ impl AfXdpSender {
     /// # Errors
     /// Returns `ScanError::RawSocket` if socket creation, UMEM registration,
     /// ring configuration, ring mmap, or bind fails.
-    pub fn new(
-        ifname: &str,
-        queue_id: u32,
-        src_ip: Ipv4Addr,
-    ) -> Result<Self, ScanError> {
+    pub fn new(ifname: &str, queue_id: u32, src_ip: Ipv4Addr) -> Result<Self, ScanError> {
         let frame_count = Self::DEFAULT_FRAME_COUNT;
         let frame_size = Self::DEFAULT_FRAME_SIZE;
         let ring_size = frame_count / 2; // 256 entries per ring
@@ -285,7 +281,10 @@ impl AfXdpSender {
 
         // Register UMEM. Try 32-byte struct (Linux 6.8+) first, fall back to 28-byte.
         if let Err(e) = Self::register_umem(fd, umem_area as u64, umem_size as u64, frame_size) {
-            unsafe { libc::close(fd); libc::munmap(umem_area, umem_size); }
+            unsafe {
+                libc::close(fd);
+                libc::munmap(umem_area, umem_size);
+            }
             return Err(e);
         }
 
@@ -298,27 +297,38 @@ impl AfXdpSender {
         ] {
             let ret = unsafe {
                 libc::setsockopt(
-                    fd, SOL_XDP, *opt,
+                    fd,
+                    SOL_XDP,
+                    *opt,
                     &ring_size as *const _ as *const libc::c_void,
                     std::mem::size_of::<u32>() as libc::socklen_t,
                 )
             };
             if ret < 0 {
-                unsafe { libc::close(fd); libc::munmap(umem_area, umem_size); }
+                unsafe {
+                    libc::close(fd);
+                    libc::munmap(umem_area, umem_size);
+                }
                 return Err(ScanError::RawSocket(format!(
                     "AF_XDP {} setsockopt failed: {}",
-                    name, std::io::Error::last_os_error()
+                    name,
+                    std::io::Error::last_os_error()
                 )));
             }
         }
 
         // Bind socket to interface and queue
-        let ifindex = unsafe {
-            libc::if_nametoindex(std::ffi::CString::new(ifname).unwrap().as_ptr())
-        };
+        let ifindex =
+            unsafe { libc::if_nametoindex(std::ffi::CString::new(ifname).unwrap().as_ptr()) };
         if ifindex == 0 {
-            unsafe { libc::close(fd); libc::munmap(umem_area, umem_size); }
-            return Err(ScanError::RawSocket(format!("interface '{}' not found", ifname)));
+            unsafe {
+                libc::close(fd);
+                libc::munmap(umem_area, umem_size);
+            }
+            return Err(ScanError::RawSocket(format!(
+                "interface '{}' not found",
+                ifname
+            )));
         }
 
         let sxdp = SockaddrXdp {
@@ -336,7 +346,10 @@ impl AfXdpSender {
             )
         };
         if ret < 0 {
-            unsafe { libc::close(fd); libc::munmap(umem_area, umem_size); }
+            unsafe {
+                libc::close(fd);
+                libc::munmap(umem_area, umem_size);
+            }
             return Err(ScanError::RawSocket(format!(
                 "AF_XDP bind failed (requires CAP_NET_ADMIN): {}",
                 std::io::Error::last_os_error()
@@ -347,11 +360,17 @@ impl AfXdpSender {
         // AF_XDP TX UMEM frames must be full Ethernet frames; build_syn_packet()
         // returns IP-only. We prepend [dst_mac][src_mac][0x08 0x00] in send_raw.
         let src_mac = Self::read_interface_mac(ifname).map_err(|e| {
-            unsafe { libc::close(fd); libc::munmap(umem_area, umem_size); }
+            unsafe {
+                libc::close(fd);
+                libc::munmap(umem_area, umem_size);
+            }
             e
         })?;
         let dst_mac = Self::resolve_gateway_mac(ifname).map_err(|e| {
-            unsafe { libc::close(fd); libc::munmap(umem_area, umem_size); }
+            unsafe {
+                libc::close(fd);
+                libc::munmap(umem_area, umem_size);
+            }
             e
         })?;
         tracing::debug!(
@@ -362,7 +381,10 @@ impl AfXdpSender {
 
         // Get ring mmap offsets from kernel
         let off = Self::get_mmap_offsets(fd).map_err(|e| {
-            unsafe { libc::close(fd); libc::munmap(umem_area, umem_size); }
+            unsafe {
+                libc::close(fd);
+                libc::munmap(umem_area, umem_size);
+            }
             e
         })?;
 
@@ -372,45 +394,54 @@ impl AfXdpSender {
         // Mmap all four rings. Fill/completion rings hold u64 addresses (8 bytes each);
         // TX/RX rings hold xdp_desc structs (16 bytes each).
         let fill_mmap_size = page_align(off.fr.desc as usize + ring_size as usize * 8);
-        let fill_ring = Self::mmap_ring(fd, XDP_UMEM_PGOFF_FILL_RING, fill_mmap_size)
-            .map_err(|e| { unsafe { libc::close(fd); libc::munmap(umem_area, umem_size); } e })?;
+        let fill_ring =
+            Self::mmap_ring(fd, XDP_UMEM_PGOFF_FILL_RING, fill_mmap_size).map_err(|e| {
+                unsafe {
+                    libc::close(fd);
+                    libc::munmap(umem_area, umem_size);
+                }
+                e
+            })?;
 
         let comp_mmap_size = page_align(off.cr.desc as usize + ring_size as usize * 8);
         let comp_ring = Self::mmap_ring(fd, XDP_UMEM_PGOFF_COMPLETION_RING, comp_mmap_size)
             .map_err(|e| {
-                unsafe { libc::munmap(fill_ring, fill_mmap_size); libc::close(fd); libc::munmap(umem_area, umem_size); }
+                unsafe {
+                    libc::munmap(fill_ring, fill_mmap_size);
+                    libc::close(fd);
+                    libc::munmap(umem_area, umem_size);
+                }
                 e
             })?;
 
         let tx_mmap_size = page_align(off.tx.desc as usize + ring_size as usize * 16);
-        let tx_ring = Self::mmap_ring(fd, XDP_PGOFF_TX_RING, tx_mmap_size)
-            .map_err(|e| {
-                unsafe {
-                    libc::munmap(comp_ring, comp_mmap_size);
-                    libc::munmap(fill_ring, fill_mmap_size);
-                    libc::close(fd); libc::munmap(umem_area, umem_size);
-                }
-                e
-            })?;
+        let tx_ring = Self::mmap_ring(fd, XDP_PGOFF_TX_RING, tx_mmap_size).map_err(|e| {
+            unsafe {
+                libc::munmap(comp_ring, comp_mmap_size);
+                libc::munmap(fill_ring, fill_mmap_size);
+                libc::close(fd);
+                libc::munmap(umem_area, umem_size);
+            }
+            e
+        })?;
 
         let rx_mmap_size = page_align(off.rx.desc as usize + ring_size as usize * 16);
-        let rx_ring = Self::mmap_ring(fd, XDP_PGOFF_RX_RING, rx_mmap_size)
-            .map_err(|e| {
-                unsafe {
-                    libc::munmap(tx_ring, tx_mmap_size);
-                    libc::munmap(comp_ring, comp_mmap_size);
-                    libc::munmap(fill_ring, fill_mmap_size);
-                    libc::close(fd); libc::munmap(umem_area, umem_size);
-                }
-                e
-            })?;
+        let rx_ring = Self::mmap_ring(fd, XDP_PGOFF_RX_RING, rx_mmap_size).map_err(|e| {
+            unsafe {
+                libc::munmap(tx_ring, tx_mmap_size);
+                libc::munmap(comp_ring, comp_mmap_size);
+                libc::munmap(fill_ring, fill_mmap_size);
+                libc::close(fd);
+                libc::munmap(umem_area, umem_size);
+            }
+            e
+        })?;
 
         // Pre-populate the fill ring with RX frame addresses (second half of UMEM).
         // CRITICAL: without this the kernel has nowhere to put redirected packets
         // and every bpf_redirect_map call results in a drop (xdp_drops counter).
-        let fill_desc_base = unsafe {
-            (fill_ring as *mut u8).add(off.fr.desc as usize) as *mut u64
-        };
+        let fill_desc_base =
+            unsafe { (fill_ring as *mut u8).add(off.fr.desc as usize) as *mut u64 };
         for i in 0..ring_size {
             let rx_frame_addr = (ring_size + i) as u64 * frame_size as u64;
             unsafe { std::ptr::write_volatile(fill_desc_base.add(i as usize), rx_frame_addr) };
@@ -471,15 +502,37 @@ impl AfXdpSender {
     /// 128-byte (Linux 5.10+, with `flags` field) struct layouts.
     fn get_mmap_offsets(fd: i32) -> Result<XdpMmapOffsets, ScanError> {
         let mut off = XdpMmapOffsets {
-            rx: XdpRingOffset { producer: 0, consumer: 0, desc: 0, flags: 0 },
-            tx: XdpRingOffset { producer: 0, consumer: 0, desc: 0, flags: 0 },
-            fr: XdpRingOffset { producer: 0, consumer: 0, desc: 0, flags: 0 },
-            cr: XdpRingOffset { producer: 0, consumer: 0, desc: 0, flags: 0 },
+            rx: XdpRingOffset {
+                producer: 0,
+                consumer: 0,
+                desc: 0,
+                flags: 0,
+            },
+            tx: XdpRingOffset {
+                producer: 0,
+                consumer: 0,
+                desc: 0,
+                flags: 0,
+            },
+            fr: XdpRingOffset {
+                producer: 0,
+                consumer: 0,
+                desc: 0,
+                flags: 0,
+            },
+            cr: XdpRingOffset {
+                producer: 0,
+                consumer: 0,
+                desc: 0,
+                flags: 0,
+            },
         };
         let mut optlen = std::mem::size_of::<XdpMmapOffsets>() as libc::socklen_t;
         let ret = unsafe {
             libc::getsockopt(
-                fd, SOL_XDP, XDP_MMAP_OFFSETS,
+                fd,
+                SOL_XDP,
+                XDP_MMAP_OFFSETS,
                 &mut off as *mut _ as *mut libc::c_void,
                 &mut optlen,
             )
@@ -508,7 +561,8 @@ impl AfXdpSender {
         if ptr == libc::MAP_FAILED {
             return Err(ScanError::RawSocket(format!(
                 "AF_XDP ring mmap failed (pgoff={:#x}): {}",
-                pgoff, std::io::Error::last_os_error()
+                pgoff,
+                std::io::Error::last_os_error()
             )));
         }
         Ok(ptr)
@@ -517,10 +571,29 @@ impl AfXdpSender {
     /// Attempt `XDP_UMEM_REG` with the 32-byte struct (Linux 6.8+) then fall
     /// back to the 28-byte compat struct (pre-6.8 / some linuxkit builds).
     fn register_umem(fd: i32, addr: u64, len: u64, chunk_size: u32) -> Result<(), ScanError> {
-        let reg32 = XdpUmemReg { addr, len, chunk_size, headroom: 0, flags: 0, tx_metadataoff: 0 };
-        tracing::debug!(optlen = 32, fd, chunk_size, len, "XDP_UMEM_REG: trying 32-byte struct");
+        let reg32 = XdpUmemReg {
+            addr,
+            len,
+            chunk_size,
+            headroom: 0,
+            flags: 0,
+            tx_metadataoff: 0,
+        };
+        tracing::debug!(
+            optlen = 32,
+            fd,
+            chunk_size,
+            len,
+            "XDP_UMEM_REG: trying 32-byte struct"
+        );
         let ret = unsafe {
-            libc::setsockopt(fd, SOL_XDP, XDP_UMEM_REG, &reg32 as *const _ as *const libc::c_void, 32)
+            libc::setsockopt(
+                fd,
+                SOL_XDP,
+                XDP_UMEM_REG,
+                &reg32 as *const _ as *const libc::c_void,
+                32,
+            )
         };
         if ret == 0 {
             tracing::debug!(optlen = 32, "XDP_UMEM_REG: 32-byte struct accepted");
@@ -529,9 +602,21 @@ impl AfXdpSender {
         let err32 = std::io::Error::last_os_error();
         tracing::debug!(optlen = 32, error = %err32, "XDP_UMEM_REG: 32-byte struct rejected, trying 28-byte");
 
-        let reg28 = XdpUmemRegCompat { addr, len, chunk_size, headroom: 0, flags: 0 };
+        let reg28 = XdpUmemRegCompat {
+            addr,
+            len,
+            chunk_size,
+            headroom: 0,
+            flags: 0,
+        };
         let ret = unsafe {
-            libc::setsockopt(fd, SOL_XDP, XDP_UMEM_REG, &reg28 as *const _ as *const libc::c_void, 28)
+            libc::setsockopt(
+                fd,
+                SOL_XDP,
+                XDP_UMEM_REG,
+                &reg28 as *const _ as *const libc::c_void,
+                28,
+            )
         };
         if ret == 0 {
             tracing::debug!(optlen = 28, "XDP_UMEM_REG: 28-byte compat struct accepted");
@@ -559,7 +644,10 @@ impl AfXdpSender {
         let s = s.trim();
         let parts: Vec<&str> = s.split(':').collect();
         if parts.len() != 6 {
-            return Err(ScanError::RawSocket(format!("invalid MAC address: '{}'", s)));
+            return Err(ScanError::RawSocket(format!(
+                "invalid MAC address: '{}'",
+                s
+            )));
         }
         let mut mac = [0u8; 6];
         for (i, p) in parts.iter().enumerate() {
@@ -634,17 +722,15 @@ impl AfXdpSender {
     /// MAC in `/proc/net/arp`. Triggers an ARP resolution via `arping` if the
     /// entry is missing (common on a fresh VM before any outbound traffic).
     fn resolve_gateway_mac(ifname: &str) -> Result<[u8; 6], ScanError> {
-        let route_content = std::fs::read_to_string("/proc/net/route").map_err(|e| {
-            ScanError::RawSocket(format!("read /proc/net/route: {}", e))
-        })?;
+        let route_content = std::fs::read_to_string("/proc/net/route")
+            .map_err(|e| ScanError::RawSocket(format!("read /proc/net/route: {}", e)))?;
         let gw_ip = Self::parse_gateway_from_proc_route(&route_content).ok_or_else(|| {
             ScanError::RawSocket("no default gateway found in /proc/net/route".to_string())
         })?;
 
         // Try ARP cache first (fast path — almost always populated on cloud VMs)
-        let arp_content = std::fs::read_to_string("/proc/net/arp").map_err(|e| {
-            ScanError::RawSocket(format!("read /proc/net/arp: {}", e))
-        })?;
+        let arp_content = std::fs::read_to_string("/proc/net/arp")
+            .map_err(|e| ScanError::RawSocket(format!("read /proc/net/arp: {}", e)))?;
         if let Some(mac) = Self::parse_arp_mac(&arp_content, gw_ip) {
             return Ok(mac);
         }
@@ -655,9 +741,8 @@ impl AfXdpSender {
             .args(["-c", "1", "-W", "1", "-I", ifname, &gw_ip.to_string()])
             .output();
 
-        let arp_content2 = std::fs::read_to_string("/proc/net/arp").map_err(|e| {
-            ScanError::RawSocket(format!("read /proc/net/arp after ping: {}", e))
-        })?;
+        let arp_content2 = std::fs::read_to_string("/proc/net/arp")
+            .map_err(|e| ScanError::RawSocket(format!("read /proc/net/arp after ping: {}", e)))?;
         Self::parse_arp_mac(&arp_content2, gw_ip).ok_or_else(|| {
             ScanError::RawSocket(format!(
                 "gateway {} MAC not in ARP cache after ping — cannot send AF_XDP frames",
@@ -700,9 +785,7 @@ impl AfXdpSender {
     /// all subsequent XDP redirects are dropped.
     fn push_fill_ring(&mut self, frame_addr: u64) {
         let fill_base = self.fill_ring as *mut u8;
-        let desc_ptr = unsafe {
-            fill_base.add(self.fill_desc_off) as *mut u64
-        };
+        let desc_ptr = unsafe { fill_base.add(self.fill_desc_off) as *mut u64 };
         unsafe {
             std::ptr::write_volatile(
                 desc_ptr.add((self.fill_prod % self.ring_size) as usize),
@@ -773,11 +856,14 @@ impl AfXdpSend for AfXdpSender {
         let desc_slot = (self.tx_prod % self.ring_size) as usize;
         unsafe {
             let desc_ptr = tx_base.add(self.tx_desc_off) as *mut XdpDesc;
-            std::ptr::write_volatile(desc_ptr.add(desc_slot), XdpDesc {
-                addr: frame_addr,
-                len: eth_total as u32,
-                options: 0,
-            });
+            std::ptr::write_volatile(
+                desc_ptr.add(desc_slot),
+                XdpDesc {
+                    addr: frame_addr,
+                    len: eth_total as u32,
+                    options: 0,
+                },
+            );
         }
 
         // Advance TX producer with RELEASE so kernel sees the new descriptor
@@ -789,7 +875,14 @@ impl AfXdpSend for AfXdpSender {
 
         // Kick the kernel TX path (sendto with null buf is the AF_XDP doorbell)
         let ret = unsafe {
-            libc::sendto(self.fd, std::ptr::null(), 0, libc::MSG_DONTWAIT, std::ptr::null(), 0)
+            libc::sendto(
+                self.fd,
+                std::ptr::null(),
+                0,
+                libc::MSG_DONTWAIT,
+                std::ptr::null(),
+                0,
+            )
         };
         if ret < 0 {
             let err = std::io::Error::last_os_error();
@@ -806,8 +899,16 @@ impl AfXdpSend for AfXdpSender {
     /// returns the consumed RX frame addresses to the fill ring so the kernel
     /// has fresh slots for subsequent redirected packets.
     fn poll_rx(&mut self, timeout_ms: u64) -> Vec<RxFrame> {
-        let mut pfd = libc::pollfd { fd: self.fd, events: libc::POLLIN, revents: 0 };
-        let timeout_i32 = if timeout_ms == 0 { 0 } else { timeout_ms as i32 };
+        let mut pfd = libc::pollfd {
+            fd: self.fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout_i32 = if timeout_ms == 0 {
+            0
+        } else {
+            timeout_ms as i32
+        };
 
         let ret = unsafe { libc::poll(&mut pfd, 1, timeout_i32) };
         if ret <= 0 {
@@ -1079,7 +1180,11 @@ mod tests {
 
         let drained = mock.drain_sent();
         assert_eq!(drained.len(), 2);
-        assert_eq!(mock.sent_count(), 0, "sent queue should be empty after drain");
+        assert_eq!(
+            mock.sent_count(),
+            0,
+            "sent queue should be empty after drain"
+        );
     }
 
     #[test]
@@ -1137,7 +1242,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn test_parse_gateway_from_proc_route_found() {
         // Matches the actual /proc/net/route format on scanner-1
-        let content = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n\
+        let content =
+            "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n\
                        eth0\t00000000\t01A0F868\t0003\t0\t0\t0\t00000000\t0\t0\t0\n\
                        eth0\t0000100A\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n";
         let gw = AfXdpSender::parse_gateway_from_proc_route(content).unwrap();
@@ -1148,7 +1254,8 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn test_parse_gateway_from_proc_route_no_default() {
-        let content = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n\
+        let content =
+            "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n\
                        eth0\t0000100A\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n";
         assert!(AfXdpSender::parse_gateway_from_proc_route(content).is_none());
     }
@@ -1179,8 +1286,10 @@ mod tests {
         let content = "IP address       HW type     Flags       HW address            Mask     Device\n\
                        104.248.160.1    0x1         0x0         00:00:00:00:00:00     *        eth0\n";
         let ip = std::net::Ipv4Addr::new(104, 248, 160, 1);
-        assert!(AfXdpSender::parse_arp_mac(content, ip).is_none(),
-            "incomplete ARP entry (all-zero MAC) must be skipped");
+        assert!(
+            AfXdpSender::parse_arp_mac(content, ip).is_none(),
+            "incomplete ARP entry (all-zero MAC) must be skipped"
+        );
     }
 
     // ==========================================================================
@@ -1193,7 +1302,11 @@ mod tests {
     fn test_afxdp_sender_creates_socket_on_linux() {
         // Requires CAP_NET_ADMIN, run in: docker run --privileged --cap-add NET_ADMIN
         let result = AfXdpSender::new("lo", 0, Ipv4Addr::new(127, 0, 0, 1));
-        assert!(result.is_ok(), "AF_XDP socket creation should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "AF_XDP socket creation should succeed: {:?}",
+            result.err()
+        );
         let sender = result.unwrap();
         assert!(sender.fd() > 0);
     }

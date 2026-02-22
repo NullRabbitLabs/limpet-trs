@@ -89,7 +89,7 @@ impl DiscoveryCollector {
                 PortState::Unreachable => unreachable_count += 1,
                 PortState::Filtered => filtered_count += 1,
                 PortState::Pending => filtered_count += 1, // shouldn't happen after classify
-                PortState::Firewalled => {} // counted after reclassify pass
+                PortState::Firewalled => {}                // counted after reclassify pass
             }
 
             ports.push(discovered);
@@ -288,9 +288,7 @@ fn reclassify_firewalled(batch: &mut DiscoveryBatch) {
             .unwrap_or(false);
 
         let timing_signal = match baseline_timing_ns {
-            Some(bl) => {
-                port.timing_ns < bl / 5 && port.timing_ns < ABSOLUTE_TIMING_THRESHOLD_NS
-            }
+            Some(bl) => port.timing_ns < bl / 5 && port.timing_ns < ABSOLUTE_TIMING_THRESHOLD_NS,
             None => port.timing_ns < ABSOLUTE_TIMING_THRESHOLD_NS,
         };
 

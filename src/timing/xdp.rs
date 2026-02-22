@@ -138,7 +138,10 @@ impl BpfTimingCollector {
         let mut hook = TcHook::new(fd);
         // priority(1): fixed priority ensures replace(true) always matches the same
         // slot on restart, rather than appending at an auto-assigned priority.
-        hook.ifindex(ifindex).attach_point(TC_EGRESS).replace(true).priority(1);
+        hook.ifindex(ifindex)
+            .attach_point(TC_EGRESS)
+            .replace(true)
+            .priority(1);
 
         hook.create().map_err(|e| BpfTimingError::AttachTc {
             interface: interface.to_string(),
@@ -621,9 +624,7 @@ pub fn check_bpf_source_safety(source: &str) -> Vec<String> {
 
     // If bpf_redirect_map is used, it must reference xsk_map (XSKMAP AF_XDP socket)
     if source.contains("bpf_redirect_map") && !source.contains("xsk_map") {
-        violations.push(
-            "bpf_redirect_map must reference xsk_map for AF_XDP redirect".into(),
-        );
+        violations.push("bpf_redirect_map must reference xsk_map for AF_XDP redirect".into());
     }
 
     violations

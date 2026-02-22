@@ -29,7 +29,10 @@ pub fn format_pretty(result: &ScanResult, target_input: &str) -> String {
     out.push('\n');
 
     // Port table
-    out.push_str(&format!("{:<10}{:<10}{:<10}{:<6}{}\n", "PORT", "STATE", "TIMING", "TTL", "WIN"));
+    out.push_str(&format!(
+        "{:<10}{:<10}{:<10}{:<6}{}\n",
+        "PORT", "STATE", "TIMING", "TTL", "WIN"
+    ));
 
     let mut visible_ports: Vec<&ScannedPort> = result
         .ports
@@ -65,11 +68,31 @@ pub fn format_pretty(result: &ScanResult, target_input: &str) -> String {
 
     out.push('\n');
 
-    let open = result.ports.iter().filter(|p| p.state == PortState::Open).count();
-    let closed = result.ports.iter().filter(|p| p.state == PortState::Closed).count();
-    let filtered = result.ports.iter().filter(|p| p.state == PortState::Filtered).count();
-    let firewalled = result.ports.iter().filter(|p| p.state == PortState::Firewalled).count();
-    let unreachable = result.ports.iter().filter(|p| p.state == PortState::Unreachable).count();
+    let open = result
+        .ports
+        .iter()
+        .filter(|p| p.state == PortState::Open)
+        .count();
+    let closed = result
+        .ports
+        .iter()
+        .filter(|p| p.state == PortState::Closed)
+        .count();
+    let filtered = result
+        .ports
+        .iter()
+        .filter(|p| p.state == PortState::Filtered)
+        .count();
+    let firewalled = result
+        .ports
+        .iter()
+        .filter(|p| p.state == PortState::Firewalled)
+        .count();
+    let unreachable = result
+        .ports
+        .iter()
+        .filter(|p| p.state == PortState::Unreachable)
+        .count();
 
     let total = result.ports.len();
     let duration_s = result.duration_ms as f64 / 1000.0;
@@ -106,9 +129,8 @@ pub fn format_pretty(result: &ScanResult, target_input: &str) -> String {
 
 /// Format a scan result as JSON.
 pub fn format_json(result: &ScanResult) -> String {
-    serde_json::to_string_pretty(&JsonOutput::from(result)).unwrap_or_else(|e| {
-        format!("{{\"error\": \"serialization failed: {e}\"}}")
-    })
+    serde_json::to_string_pretty(&JsonOutput::from(result))
+        .unwrap_or_else(|e| format!("{{\"error\": \"serialization failed: {e}\"}}"))
 }
 
 /// JSON output structure.
@@ -276,9 +298,27 @@ mod tests {
     #[test]
     fn test_format_pretty_summary() {
         let result = make_result(vec![
-            ScannedPort { port: 22, state: PortState::Open, timing_ns: 1_000_000, response_ttl: 64, response_win: 65535 },
-            ScannedPort { port: 80, state: PortState::Open, timing_ns: 800_000, response_ttl: 64, response_win: 65535 },
-            ScannedPort { port: 8080, state: PortState::Filtered, timing_ns: 0, response_ttl: 0, response_win: 0 },
+            ScannedPort {
+                port: 22,
+                state: PortState::Open,
+                timing_ns: 1_000_000,
+                response_ttl: 64,
+                response_win: 65535,
+            },
+            ScannedPort {
+                port: 80,
+                state: PortState::Open,
+                timing_ns: 800_000,
+                response_ttl: 64,
+                response_win: 65535,
+            },
+            ScannedPort {
+                port: 8080,
+                state: PortState::Filtered,
+                timing_ns: 0,
+                response_ttl: 0,
+                response_win: 0,
+            },
         ]);
         let output = format_pretty(&result, "1.2.3.4");
         assert!(output.contains("3 ports scanned"));
@@ -307,8 +347,20 @@ mod tests {
     #[test]
     fn test_format_json_pending_ports_excluded() {
         let result = make_result(vec![
-            ScannedPort { port: 80, state: PortState::Open, timing_ns: 0, response_ttl: 0, response_win: 0 },
-            ScannedPort { port: 81, state: PortState::Pending, timing_ns: 0, response_ttl: 0, response_win: 0 },
+            ScannedPort {
+                port: 80,
+                state: PortState::Open,
+                timing_ns: 0,
+                response_ttl: 0,
+                response_win: 0,
+            },
+            ScannedPort {
+                port: 81,
+                state: PortState::Pending,
+                timing_ns: 0,
+                response_ttl: 0,
+                response_win: 0,
+            },
         ]);
         let json = format_json(&result);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

@@ -29,9 +29,11 @@ pub use output::{format_json, format_pretty};
 /// Limpet — high-precision network scanner with eBPF/XDP kernel-bypass timing.
 #[derive(Parser, Debug)]
 #[command(name = "limpet", version, about)]
-#[command(long_about = "Limpet is a network scanner and RTT timing tool using XDP kernel-bypass \
+#[command(
+    long_about = "Limpet is a network scanner and RTT timing tool using XDP kernel-bypass \
     for nanosecond-precision TCP handshake timing. Like nmap but with BPF timestamps \
-    and ML-ready feature extraction. Requires CAP_BPF + CAP_NET_ADMIN (sudo) on Linux.")]
+    and ML-ready feature extraction. Requires CAP_BPF + CAP_NET_ADMIN (sudo) on Linux."
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -192,8 +194,8 @@ pub async fn run_scan(
     let bpf = Arc::new(Mutex::new(bpf_collector));
 
     // Detect source IP
-    let src_ip = detect_source_ip(target_ip)
-        .map_err(|e| format!("source IP detection failed: {e}"))?;
+    let src_ip =
+        detect_source_ip(target_ip).map_err(|e| format!("source IP detection failed: {e}"))?;
 
     // Build stealth profile with pacing applied
     let mut stealth = StealthProfile::linux_6x_default();
@@ -207,9 +209,7 @@ pub async fn run_scan(
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (iface, bpf, src_ip, stealth, ports, batch_size, timeout);
-        return Err(
-            "XDP scanning requires Linux with CAP_BPF and CAP_NET_ADMIN".to_string(),
-        );
+        return Err("XDP scanning requires Linux with CAP_BPF and CAP_NET_ADMIN".to_string());
     }
 
     #[cfg(target_os = "linux")]
@@ -315,7 +315,10 @@ pub async fn run_time(
 
     match output {
         OutputFmt::Json => {
-            println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).unwrap_or_default()
+            );
         }
         OutputFmt::Pretty => {
             let host_label = hostname

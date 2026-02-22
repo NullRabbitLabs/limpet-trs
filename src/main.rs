@@ -45,9 +45,14 @@ async fn main() {
             .await;
         }
         Some(Commands::Time(args)) => {
-            if let Err(e) =
-                cli::run_time(&args.target, args.port, args.samples, args.timeout, args.output)
-                    .await
+            if let Err(e) = cli::run_time(
+                &args.target,
+                args.port,
+                args.samples,
+                args.timeout,
+                args.output,
+            )
+            .await
             {
                 eprintln!("Error: {e}");
                 std::process::exit(1);

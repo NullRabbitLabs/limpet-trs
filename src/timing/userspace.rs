@@ -175,8 +175,7 @@ async fn poll_bpf_timing_entry(
     src_port: u16,
     timeout_ms: u64,
 ) -> Option<TimingMapEntry> {
-    let deadline =
-        tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
 
     loop {
         // Drain AF_XDP ring to prevent overflow and allow XDP to keep redirecting.
@@ -299,9 +298,7 @@ pub async fn collect_timing_samples_raw(
             }
             Some(_) => {
                 // Port is closed (RST) or unreachable (ICMP) — not an open port.
-                last_error = Some(
-                    "port closed or unreachable (RST/ICMP)".to_string(),
-                );
+                last_error = Some("port closed or unreachable (RST/ICMP)".to_string());
                 if samples.is_empty() {
                     break;
                 }
@@ -309,7 +306,8 @@ pub async fn collect_timing_samples_raw(
             None => {
                 // Timeout: no response received within timeout_ms.
                 // Port is filtered or target is unreachable.
-                last_error = Some("no response within timeout (filtered or unreachable)".to_string());
+                last_error =
+                    Some("no response within timeout (filtered or unreachable)".to_string());
                 if samples.is_empty() {
                     break;
                 }
