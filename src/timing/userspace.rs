@@ -54,8 +54,15 @@ pub async fn collect_timing_samples(
         let start = Instant::now();
         let is_last = i == sample_count - 1;
 
-        match TcpStream::connect_timeout(&addr, timeout) {
-            Ok(mut stream) => {
+        // Use async connect so tokio threads yield while waiting — enables
+        // true concurrency when multiple collect_timing_samples tasks are
+        // spawned in parallel (the old TcpStream::connect_timeout was
+        // blocking and serialised all tasks on the tokio thread pool).
+        let connect_result =
+            tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr)).await;
+
+        match connect_result {
+            Ok(Ok(stream)) => {
                 let elapsed = start.elapsed();
                 let src_port = stream.local_addr().map(|a| a.port()).unwrap_or(0);
 
@@ -79,17 +86,26 @@ pub async fn collect_timing_samples(
 
                 samples.push(micros);
 
-                // On the last sample, attempt passive banner capture
+                // On the last sample, attempt passive banner capture.
+                // Convert to std stream and restore blocking mode before read.
                 if is_last {
-                    banner = read_banner(&mut stream, banner_timeout_ms);
+                    if let Ok(mut std_stream) = stream.into_std() {
+                        let _ = std_stream.set_nonblocking(false);
+                        banner = read_banner(&mut std_stream, banner_timeout_ms);
+                    }
                 }
-
-                drop(stream);
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 last_error = Some(format!("{}", e));
                 // Early bail-out: if no samples collected yet, the port is
                 // unreachable and remaining attempts will also fail.
+                if samples.is_empty() {
+                    break;
+                }
+            }
+            Err(_) => {
+                // tokio::time::timeout elapsed
+                last_error = Some("connection timed out".to_string());
                 if samples.is_empty() {
                     break;
                 }
@@ -555,6 +571,26 @@ mod tests {
             timeout_ms,
             banner_timeout_ms: None,
         }
+    }
+
+    #[tokio::test]
+    async fn test_collect_timing_samples_async_no_bpf() {
+        // Verify collect_timing_samples works correctly with the async connect path
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        std::thread::spawn(move || {
+            for _ in 0..3 {
+                let _ = listener.accept();
+            }
+        });
+
+        let request = create_request("127.0.0.1", port, 3, 2000);
+        let result = collect_timing_samples(&request, None).await;
+
+        assert!(result.error.is_none(), "expected no error: {:?}", result.error);
+        assert_eq!(result.samples.len(), 3);
+        assert_eq!(result.precision_class, "userspace");
     }
 
     #[test]
