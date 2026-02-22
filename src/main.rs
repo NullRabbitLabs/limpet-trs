@@ -6,11 +6,9 @@
 //!   limpet time <TARGET> --port <PORT> [--samples <N>]
 //!   limpet --mcp    (run as MCP server over stdio)
 
-mod cli;
-mod mcp;
-
 use clap::Parser;
-use cli::{Cli, Commands, OutputFmt, StealthArg};
+use limpet::cli::{self, Cli, Commands, OutputFmt, StealthArg};
+use limpet::mcp;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]

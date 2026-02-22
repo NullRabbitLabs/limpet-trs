@@ -3,6 +3,8 @@
 //! Provides SYN-based port discovery with nanosecond RTT measurement and
 //! ML-ready feature extraction. Usable as a library or via the CLI / MCP server.
 
+pub mod cli;
+pub mod mcp;
 pub mod scanner;
 pub mod timing;
 
