@@ -782,6 +782,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unnecessary_literal_unwrap)]
     fn test_bpf_state_interface_falls_back_to_eth0() {
         // When LIMPET_INTERFACE is not set and BPF fails, interface defaults to "eth0".
         let env_interface: Option<String> = None;
