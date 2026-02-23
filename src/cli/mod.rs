@@ -60,11 +60,6 @@ pub struct Cli {
     /// Network interface for XDP (auto-detect from routing table if omitted)
     #[arg(long)]
     pub interface: Option<String>,
-
-    /// Run as MCP server over stdio (ignores other flags)
-    #[cfg(feature = "mcp")]
-    #[arg(long)]
-    pub mcp: bool,
 }
 
 /// Subcommands.

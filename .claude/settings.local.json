@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo test --lib 2>&1 | tail -30)",
+      "Bash(cargo check 2>&1 | grep -E \"^error|^warning\\\\[\" | head -20)",
+      "Bash(cargo check --features \"\" 2>&1 | grep -v libbpf | grep -E \"^error\\\\[\" | head -20)",
+      "Bash(git add src/scanner/afxdp_sender.rs src/scanner/raw_socket_sender.rs src/scanner/syn_sender.rs .github/workflows/ci.yml && git commit -m \"$\\(cat <<'EOF'\nfix\\(test\\): replace UB raw pointer downcast with safe Any downcasting\n\nCasting *const dyn Trait to *const ConcreteType is undefined behaviour\nin Rust. Replace the unsafe block in test_send_single_syn_uses_afxdp\nwith safe Any::downcast_ref via a new as_any\\(\\) method on the AfXdpSend\ntrait, implemented on all three concrete senders.\n\nAlso adds a GitHub Actions CI pipeline that installs libbpf/clang and\nruns fmt, clippy, and cargo test --lib on every push and PR.\nEOF\n\\)\")",
+      "Bash(git remote -v && gh repo view --json nameWithOwner,description,repositoryTopics,url 2>/dev/null || echo \"gh not available or not authenticated\")",
+      "Bash(gh api repos/NullRabbitLabs/limpet-trs \\\\\n  --method PATCH \\\\\n  -f description=\"High-precision network scanner with eBPF/XDP kernel-bypass timing. SYN scanning with nanosecond RTT resolution.\" \\\\\n  -f homepage=\"https://nullrabbit.ai\")",
+      "Bash(gh release create v0.1.0 \\\\\n  --title \"v0.1.0 — Initial Public Release\" \\\\\n  --notes \"$\\(cat <<'EOF'\n## Limpet v0.1.0 — Initial Public Release\n\nLimpet is a high-precision network scanner using eBPF/XDP kernel-bypass timing for nanosecond-resolution SYN scanning.\n\n### Features\n\n- **eBPF/XDP kernel-bypass** — timestamps captured at the NIC driver level, bypassing the kernel network stack\n- **Nanosecond RTT resolution** — sub-microsecond timing precision for network fingerprinting\n- **SYN scanning** — stateless TCP SYN probing with kernel-level response capture\n- **ML-ready output** — structured timing embeddings for downstream analysis pipelines\n- **Ring buffer architecture** — lock-free BPF ring buffer for high-throughput packet capture\n\n### Context\n\nLimpet is the open-source scanning component of the [NullRabbit]\\(https://nullrabbit.ai\\) platform — autonomous defence for validator infrastructure and decentralised networks.\n\nFor the governance framework behind autonomous defensive action, see:\n\n> **On Earned Autonomy: Delegating Network-Lethal Authority to Machines**\n> Simon Morley, NullRabbit Labs, January 2026\n> [DOI: 10.5281/zenodo.18406828]\\(https://doi.org/10.5281/zenodo.18406828\\)\nEOF\n\\)\")",
+      "Bash(cargo clippy --lib -- -D warnings 2>&1)",
+      "Bash(git push 2>&1)",
+      "Bash(gh run list --limit 3 2>&1)",
+      "Bash(gh run view 22285655557 --log-failed 2>&1 | grep -E \"\\(error|-->\\)\" | head -30)",
+      "Bash(gh run view 22285655557 --log-failed 2>&1 | grep -A 10 \"unwrap_or_else\" | head -30)",
+      "Bash(git add src/bin/consumer.rs src/bin/server.rs && git commit -m \"$\\(cat <<'EOF'\nfix\\(clippy\\): remove unused import and suppress unnecessary_literal_unwrap\n\n- Remove unused `redis::AsyncCommands` import from bin/consumer.rs\n- Allow clippy::unnecessary_literal_unwrap on test that documents None fallback\nEOF\n\\)\" && git push)",
+      "Bash(git add .github/workflows/release.yml && git commit -m \"$\\(cat <<'EOF'\nci: add release workflow to publish latest build after CI passes\n\nTriggers on workflow_run after CI succeeds on main. Builds all three\nbinaries \\(limpet, limpet-server, limpet-consumer\\) in release mode,\nstrips them, tarballs, and publishes as a rolling 'latest' pre-release.\nEOF\n\\)\" && git push)",
+      "Bash(gh run list --limit 10 2>&1)",
+      "Bash(gh release list 2>&1)"
+    ]
+  }
+}

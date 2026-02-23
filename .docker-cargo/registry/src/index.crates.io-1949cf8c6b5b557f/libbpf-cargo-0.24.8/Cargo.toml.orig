@@ -1,0 +1,45 @@
+[package]
+name = "libbpf-cargo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+description = "Cargo plugin to build bpf programs"
+readme = "README.md"
+authors = ["Daniel Xu <dxu@dxuuu.xyz>", "Daniel Müller <deso@posteo.net>"]
+keywords = ["bpf", "ebpf", "libbpf"]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+# Crate is named libbpf-cargo to be consistent with libbpf-rs.
+# Binary must be named cargo-${SUBCOMMAND} to interop with cargo.
+[[bin]]
+name = "cargo-libbpf"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# By default the crate uses a vendored libbpf, but requires other
+# necessary libs to be present on the system.
+default = ["libbpf-rs/default"]
+
+[dependencies]
+anyhow = "1.0.1"
+cargo_metadata = "0.15.0"
+libbpf-rs = { version = "0.24", default-features = false, path = "../libbpf-rs" }
+memmap2 = "0.5"
+regex = { version = "1.6.0", default-features = false, features = ["std", "unicode-perl"] }
+semver = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.3"
+clap = { version = "4.0.32", features = ["derive"] }
+
+[dev-dependencies]
+goblin = "0.9"
+vmlinux = { git = "https://github.com/libbpf/vmlinux.h.git", rev = "83a228cf37fc65f2d14e4896a04922b5ee531a94" }

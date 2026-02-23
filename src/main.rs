@@ -4,12 +4,9 @@
 //!   limpet <TARGET> [--ports <SPEC>] [--stealth <PROFILE>] [--output json|pretty]
 //!   limpet scan <TARGET> [OPTIONS]
 //!   limpet time <TARGET> --port <PORT> [--samples <N>]
-//!   limpet --mcp    (run as MCP server over stdio)
 
 use clap::Parser;
 use limpet::cli::{self, Cli, Commands, OutputFmt, StealthArg};
-#[cfg(feature = "mcp")]
-use limpet::mcp;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -21,16 +18,6 @@ async fn main() {
         .init();
 
     let cli = Cli::parse();
-
-    // MCP server mode — ignores all other flags
-    #[cfg(feature = "mcp")]
-    if cli.mcp {
-        if let Err(e) = mcp::run_mcp_server().await {
-            eprintln!("MCP server error: {e}");
-            std::process::exit(1);
-        }
-        return;
-    }
 
     match cli.command {
         Some(Commands::Scan(args)) => {

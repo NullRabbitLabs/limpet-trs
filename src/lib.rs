@@ -1,11 +1,9 @@
 //! Limpet — high-precision network scanner with eBPF/XDP kernel-bypass timing.
 //!
 //! Provides SYN-based port discovery with nanosecond RTT measurement and
-//! ML-ready feature extraction. Usable as a library or via the CLI / MCP server.
+//! ML-ready feature extraction. Usable as a library or via the CLI.
 
 pub mod cli;
-#[cfg(feature = "mcp")]
-pub mod mcp;
 pub mod scanner;
 pub mod timing;
 
