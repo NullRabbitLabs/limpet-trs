@@ -588,7 +588,11 @@ mod tests {
         let request = create_request("127.0.0.1", port, 3, 2000);
         let result = collect_timing_samples(&request, None).await;
 
-        assert!(result.error.is_none(), "expected no error: {:?}", result.error);
+        assert!(
+            result.error.is_none(),
+            "expected no error: {:?}",
+            result.error
+        );
         assert_eq!(result.samples.len(), 3);
         assert_eq!(result.precision_class, "userspace");
     }
