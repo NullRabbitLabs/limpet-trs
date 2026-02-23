@@ -2,3 +2,7 @@
 Cargo.lock
 *.bpf.o
 *.skel.rs
+
+# Local dev caches
+.docker-cargo/
+.claude/
