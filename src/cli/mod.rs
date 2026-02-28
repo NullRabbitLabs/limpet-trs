@@ -210,10 +210,11 @@ pub async fn run_scan(
 
     #[cfg(target_os = "linux")]
     {
-        use crate::scanner::afxdp_sender::{AfXdpSend, AfXdpSender};
+        use crate::scanner::afxdp_sender::AfXdpSend;
+        use crate::scanner::hybrid_sender::HybridSender;
         use crate::scanner::raw_socket_sender::RawSocketSender;
 
-        let xdp_sender: Box<dyn AfXdpSend> = match AfXdpSender::new(&iface, 0, src_ip) {
+        let xdp_sender: Box<dyn AfXdpSend> = match HybridSender::new(&iface, 0, src_ip) {
             Ok(sender) => {
                 // Register the AF_XDP socket in the BPF xsk_map
                 let bpf_guard = bpf.lock().await;
@@ -226,7 +227,7 @@ pub async fn run_scan(
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "AF_XDP unavailable — falling back to raw socket TX"
+                    "hybrid sender unavailable — falling back to raw socket TX"
                 );
                 Box::new(
                     RawSocketSender::new(src_ip)

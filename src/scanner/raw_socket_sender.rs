@@ -34,8 +34,8 @@ use crate::scanner::syn_sender::ScanError;
 /// are captured by the BPF timing map via the TC hook (unchanged path).
 #[cfg(target_os = "linux")]
 pub struct RawSocketSender {
-    fd: i32,
-    src_ip: Ipv4Addr,
+    pub(crate) fd: i32,
+    pub(crate) src_ip: Ipv4Addr,
 }
 
 #[cfg(target_os = "linux")]
