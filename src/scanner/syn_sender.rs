@@ -259,25 +259,39 @@ impl SynScanner {
         Err(ScanError::PortExhaustion)
     }
 
+    /// SYN packet size: 20 (IP) + 20 (TCP) + 20 (options) = 60 bytes.
+    ///
+    /// This is fixed for the `linux_6x_default` profile with all TCP options
+    /// (MSS + SACK_PERM + Timestamps + NOP + WSCALE = 20 bytes of options).
+    pub const SYN_PACKET_SIZE: usize = 60;
+
     /// Build a raw SYN packet matching the stealth profile.
     ///
     /// Returns `(packet_bytes, isn)` where `isn` is the random initial sequence
     /// number. Packet includes a complete IPv4 header and TCP header with options.
     /// No Ethernet header is included (raw IP layer only).
+    ///
+    /// Uses a fixed-size stack buffer ([`SYN_PACKET_SIZE`]) to avoid a heap
+    /// allocation per packet.
     pub fn build_syn_packet(
         &self,
         src_ip: Ipv4Addr,
         target_ip: Ipv4Addr,
         src_port: u16,
         dst_port: u16,
-    ) -> (Vec<u8>, u32) {
+    ) -> ([u8; Self::SYN_PACKET_SIZE], u32) {
         let tcp_options = self.build_tcp_options();
         // Options are always 20 bytes for linux_6x_default; pad to 4-byte boundary
         let tcp_options_padded = (tcp_options.len() + 3) & !3;
         let tcp_header_len = 20 + tcp_options_padded;
         let ip_total_len = 20 + tcp_header_len;
+        debug_assert_eq!(
+            ip_total_len,
+            Self::SYN_PACKET_SIZE,
+            "SYN packet size mismatch — profile TCP options changed?"
+        );
 
-        let mut packet = vec![0u8; ip_total_len];
+        let mut packet = [0u8; Self::SYN_PACKET_SIZE];
         let isn: u32 = rand::random();
 
         // --- IPv4 header (bytes 0–19) ---
@@ -487,40 +501,53 @@ fn ones_complement_sum(data: &[u8]) -> u16 {
 /// Compute the IPv4 header checksum.
 ///
 /// The checksum field (bytes 10–11) must contain zeros when this is called.
+/// Uses a fixed-size stack buffer (max 60 bytes for IP header with options)
+/// to avoid a heap allocation per packet.
 pub fn compute_ip_checksum(header: &[u8]) -> u16 {
-    let mut data = header.to_vec();
+    let mut buf = [0u8; 60]; // max IP header size (IHL=15 → 60 bytes)
+    let len = header.len().min(60);
+    buf[..len].copy_from_slice(&header[..len]);
     // Zero the checksum field before computing
-    if data.len() >= 12 {
-        data[10] = 0;
-        data[11] = 0;
+    if len >= 12 {
+        buf[10] = 0;
+        buf[11] = 0;
     }
-    ones_complement_sum(&data)
+    ones_complement_sum(&buf[..len])
 }
 
 /// Compute the TCP checksum including the IPv4 pseudo-header.
 ///
 /// The checksum field (bytes 16–17 within `tcp_segment`) must be zero.
+/// Uses a fixed-size stack buffer (128 bytes covers max 60-byte TCP header
+/// + 12-byte pseudo-header) to avoid a heap allocation per packet.
 pub fn compute_tcp_checksum(tcp_segment: &[u8], src_ip: &Ipv4Addr, dst_ip: &Ipv4Addr) -> u16 {
     let tcp_len = tcp_segment.len() as u16;
+    let total_len = 12 + tcp_segment.len();
+    debug_assert!(
+        total_len <= 128,
+        "TCP pseudo-header + segment ({total_len}) exceeds 128-byte stack buffer"
+    );
+    let len = total_len.min(128);
 
     // IPv4 pseudo-header: src(4) + dst(4) + zero(1) + proto=6(1) + tcp_len(2)
-    let mut data = Vec::with_capacity(12 + tcp_segment.len());
-    data.extend_from_slice(&src_ip.octets());
-    data.extend_from_slice(&dst_ip.octets());
-    data.push(0); // reserved
-    data.push(0x06); // TCP protocol
-    data.push((tcp_len >> 8) as u8);
-    data.push(tcp_len as u8);
+    let mut buf = [0u8; 128];
+    buf[0..4].copy_from_slice(&src_ip.octets());
+    buf[4..8].copy_from_slice(&dst_ip.octets());
+    // buf[8] = 0; // reserved (already zero)
+    buf[9] = 0x06; // TCP protocol
+    buf[10] = (tcp_len >> 8) as u8;
+    buf[11] = tcp_len as u8;
 
     // TCP segment (zero the checksum field at offset 16–17 within TCP)
-    data.extend_from_slice(tcp_segment);
+    let seg_len = tcp_segment.len().min(116); // 128 - 12
+    buf[12..12 + seg_len].copy_from_slice(&tcp_segment[..seg_len]);
     // Offset: 12 (pseudo) + 16 (TCP checksum offset within header)
-    if data.len() >= 12 + 18 {
-        data[12 + 16] = 0;
-        data[12 + 17] = 0;
+    if len >= 12 + 18 {
+        buf[12 + 16] = 0;
+        buf[12 + 17] = 0;
     }
 
-    ones_complement_sum(&data)
+    ones_complement_sum(&buf[..len])
 }
 
 // =============================================================================

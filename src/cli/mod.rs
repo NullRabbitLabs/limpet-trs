@@ -110,6 +110,9 @@ pub struct TimeArgs {
     /// Output format
     #[arg(long, default_value = "pretty", value_enum)]
     pub output: OutputFmt,
+    /// Network interface for XDP (auto-detect if omitted)
+    #[arg(long)]
+    pub interface: Option<String>,
 }
 
 /// Stealth/pacing profile argument.
@@ -251,8 +254,38 @@ pub async fn run_scan(
             all_probes.extend(result.probed_ports);
         }
 
-        // Wait for responses to arrive in the BPF map
-        tokio::time::sleep(Duration::from_millis(timeout_ms as u64)).await;
+        // Poll BPF map for early return — check every 50ms if all probes
+        // have received responses. Fall back to full timeout as the deadline.
+        {
+            let poll_interval = Duration::from_millis(50);
+            let deadline =
+                tokio::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
+            let total_probes = all_probes.len();
+
+            loop {
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                let remaining = deadline - now;
+                tokio::time::sleep(poll_interval.min(remaining)).await;
+
+                let bpf_guard = bpf.lock().await;
+                let responded = all_probes
+                    .iter()
+                    .filter(|probe| {
+                        bpf_guard
+                            .read_timing_v2(target_ip_u32, probe.dst_port, probe.src_port)
+                            .is_some()
+                    })
+                    .count();
+                drop(bpf_guard);
+
+                if responded == total_probes {
+                    break;
+                }
+            }
+        }
 
         // Collect all results in one pass
         let bpf_guard = bpf.lock().await;
@@ -295,8 +328,24 @@ pub async fn run_time(
     samples: u32,
     timeout_ms: u32,
     output: OutputFmt,
+    interface: Option<String>,
 ) -> Result<(), String> {
     let (target_ip, hostname) = resolve_target(target)?;
+
+    // Try to initialise BPF timing backend; fall back to userspace if unavailable
+    let bpf = match crate::timing::detect_timing_backend(&interface) {
+        Ok((_backend, collector)) => {
+            tracing::info!(
+                interface = collector.interface(),
+                "BPF timing initialised — using kernel-level timestamps"
+            );
+            Some(Arc::new(Mutex::new(collector)))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "BPF timing unavailable — using userspace timing");
+            None
+        }
+    };
 
     let request = TimingRequest {
         request_id: Uuid::new_v4(),
@@ -308,7 +357,7 @@ pub async fn run_time(
         banner_timeout_ms: None,
     };
 
-    let result = collect_timing_samples(&request, None).await;
+    let result = collect_timing_samples(&request, bpf).await;
 
     match output {
         OutputFmt::Json => {
