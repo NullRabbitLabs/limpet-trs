@@ -137,10 +137,8 @@ impl AfXdpSend for RawSocketSender {
 
     /// Raw socket fallback has no AF_XDP RX ring.
     ///
-    /// Returns `false` so the caller selects the TCP connect timing path
-    /// (`collect_timing_samples`) rather than the AF_XDP RX poll path
-    /// (`collect_timing_samples_raw`). BPF map timestamps are still collected
-    /// via the TC hook; only the RX notification mechanism differs.
+    /// Returns `false` — BPF map timestamps are still collected via the TC hook;
+    /// only the RX notification mechanism differs.
     fn has_rx(&self) -> bool {
         false
     }

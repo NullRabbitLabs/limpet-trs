@@ -17,7 +17,6 @@ use uuid::Uuid;
 use crate::scanner::collector::DiscoveryCollector;
 use crate::scanner::stealth::{PacingProfile, StealthProfile};
 use crate::scanner::syn_sender::{detect_source_ip, SynScanner};
-use crate::timing::collect_timing_samples;
 use crate::{PortSpec, ScanResult, ScannedPort, TimingRequest};
 
 pub use output::{format_json, format_pretty};
@@ -322,6 +321,9 @@ pub async fn run_scan(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Run RTT timing for a single port and print results.
+///
+/// Uses the AF_XDP + BPF raw SYN probe path — same kernel-bypass pipeline as
+/// `run_scan()`. Requires Linux with CAP_BPF + CAP_NET_ADMIN.
 pub async fn run_time(
     target: &str,
     port: u16,
@@ -332,58 +334,99 @@ pub async fn run_time(
 ) -> Result<(), String> {
     let (target_ip, hostname) = resolve_target(target)?;
 
-    // Try to initialise BPF timing backend; fall back to userspace if unavailable
-    let bpf = match crate::timing::detect_timing_backend(&interface) {
-        Ok((_backend, collector)) => {
-            tracing::info!(
-                interface = collector.interface(),
-                "BPF timing initialised — using kernel-level timestamps"
-            );
-            Some(Arc::new(Mutex::new(collector)))
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "BPF timing unavailable — using userspace timing");
-            None
-        }
-    };
+    // BPF init is required — no userspace fallback
+    let (_backend, bpf_collector) = crate::timing::detect_timing_backend(&interface)
+        .map_err(|e| format!("BPF initialisation failed: {e}"))?;
 
-    let request = TimingRequest {
-        request_id: Uuid::new_v4(),
-        scan_id: None,
-        target_host: target.to_string(),
-        target_port: port,
-        sample_count: samples,
-        timeout_ms,
-        banner_timeout_ms: None,
-    };
+    let iface = bpf_collector.interface().to_string();
+    let bpf = Arc::new(Mutex::new(bpf_collector));
 
-    let result = collect_timing_samples(&request, bpf).await;
+    // Detect source IP
+    let src_ip =
+        detect_source_ip(target_ip).map_err(|e| format!("source IP detection failed: {e}"))?;
 
-    match output {
-        OutputFmt::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&result).unwrap_or_default()
-            );
-        }
-        OutputFmt::Pretty => {
-            let host_label = hostname
-                .map(|h| format!("{h} ({target_ip})"))
-                .unwrap_or_else(|| target_ip.to_string());
+    // Hardcode Normal pacing (50ms delay, 30% jitter) — sensible for repeated RTT samples
+    let pacing = PacingProfile::Normal;
+    let mut stealth = StealthProfile::linux_6x_default();
+    pacing.apply_to(&mut stealth);
 
-            println!("Timing report for {host_label} port {port}/tcp");
-            if let Some(err) = &result.error {
-                println!("Error: {err}");
-            } else {
-                println!("Backend:   {}", result.precision_class);
-                println!("Samples:   {}", result.samples.len());
-                println!("Mean RTT:  {:.2}µs", result.stats.mean);
-                println!("Std Dev:   {:.2}µs", result.stats.std);
-                println!("P50:       {:.2}µs", result.stats.p50);
-                println!("P90:       {:.2}µs", result.stats.p90);
-            }
-        }
+    // Create HybridSender → register xsk_fd → SynScanner (same pattern as run_scan)
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (iface, bpf, src_ip, stealth);
+        return Err("RTT timing requires Linux with CAP_BPF and CAP_NET_ADMIN".to_string());
     }
 
-    Ok(())
+    #[cfg(target_os = "linux")]
+    {
+        use crate::scanner::afxdp_sender::AfXdpSend;
+        use crate::scanner::hybrid_sender::HybridSender;
+        use crate::scanner::raw_socket_sender::RawSocketSender;
+        use crate::timing::collect_timing_samples_raw;
+
+        let xdp_sender: Box<dyn AfXdpSend> = match HybridSender::new(&iface, 0, src_ip) {
+            Ok(sender) => {
+                let bpf_guard = bpf.lock().await;
+                if let Err(e) = bpf_guard.register_xsk_fd(sender.fd()) {
+                    tracing::warn!(error = %e, "xsk_map registration failed — responses may not be captured");
+                }
+                drop(bpf_guard);
+                Box::new(sender)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "hybrid sender unavailable — falling back to raw socket TX"
+                );
+                Box::new(
+                    RawSocketSender::new(src_ip)
+                        .map_err(|e| format!("raw socket fallback failed: {e}"))?,
+                )
+            }
+        };
+
+        let scanner = Arc::new(Mutex::new(SynScanner::new_with_sender(
+            stealth, xdp_sender,
+        )));
+
+        let request = TimingRequest {
+            request_id: Uuid::new_v4(),
+            scan_id: None,
+            target_host: target.to_string(),
+            target_port: port,
+            sample_count: samples,
+            timeout_ms,
+            banner_timeout_ms: None,
+        };
+
+        let result = collect_timing_samples_raw(&request, bpf, scanner).await;
+
+        match output {
+            OutputFmt::Json => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                );
+            }
+            OutputFmt::Pretty => {
+                let host_label = hostname
+                    .map(|h| format!("{h} ({target_ip})"))
+                    .unwrap_or_else(|| target_ip.to_string());
+
+                println!("Timing report for {host_label} port {port}/tcp");
+                if let Some(err) = &result.error {
+                    println!("Error: {err}");
+                } else {
+                    println!("Backend:   {}", result.precision_class);
+                    println!("Samples:   {}", result.samples.len());
+                    println!("Mean RTT:  {:.2}µs", result.stats.mean);
+                    println!("Std Dev:   {:.2}µs", result.stats.std);
+                    println!("P50:       {:.2}µs", result.stats.p50);
+                    println!("P90:       {:.2}µs", result.stats.p90);
+                }
+            }
+        }
+
+        Ok(())
+    }
 }

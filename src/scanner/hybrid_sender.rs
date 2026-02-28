@@ -96,9 +96,6 @@ impl AfXdpSend for HybridSender {
     }
 
     /// Returns `true` — the AF_XDP RX ring is active and delivers response frames.
-    ///
-    /// This selects the raw SYN probe timing path (`collect_timing_samples_raw`)
-    /// rather than the TCP connect fallback.
     fn has_rx(&self) -> bool {
         true
     }

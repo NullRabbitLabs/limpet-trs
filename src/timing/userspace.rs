@@ -1,167 +1,18 @@
-//! TCP timing collection.
+//! Raw SYN probe timing collection.
 //!
 //! Collects high-precision timing samples using XDP/BPF kernel-level timestamps
-//! for IPv4 connections, with inline userspace fallback for IPv6 (XDP doesn't
-//! support IPv6).
+//! for IPv4 connections. Raw SYN probes via AF_XDP TX with kernel-bypass timing.
+//! No userspace fallback — requires Linux with CAP_BPF + CAP_NET_ADMIN.
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::{TimingRequest, TimingResult};
-use std::io::Read;
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::time::{Duration, Instant};
-
-/// Maximum banner bytes to capture from a service.
-const MAX_BANNER_BYTES: usize = 512;
-
-/// Default banner read timeout in milliseconds.
-const DEFAULT_BANNER_TIMEOUT_MS: u32 = 200;
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::time::Instant;
 
 use super::stats::calculate_stats;
 use super::xdp::BpfTimingCollector;
-
-/// Collect timing samples for a TCP connection.
-///
-/// When `bpf` is `Some`, uses BPF kernel-level timestamps for IPv4 connections.
-/// When `bpf` is `None`, uses pure userspace timing (degraded precision).
-/// IPv6 always uses inline userspace timing (XDP doesn't support IPv6).
-pub async fn collect_timing_samples(
-    request: &TimingRequest,
-    bpf: Option<Arc<Mutex<BpfTimingCollector>>>,
-) -> TimingResult {
-    let addr = match resolve_address(&request.target_host, request.target_port) {
-        Ok(addr) => addr,
-        Err(e) => return TimingResult::error(request, format!("DNS resolution failed: {}", e)),
-    };
-
-    let timeout = Duration::from_millis(request.timeout_ms as u64);
-    let mut samples = Vec::with_capacity(request.sample_count as usize);
-    let mut last_error: Option<String> = None;
-    let mut banner: Option<Vec<u8>> = None;
-
-    let ipv4_info = match addr {
-        SocketAddr::V4(v4) => Some(u32::from_be_bytes(v4.ip().octets())),
-        SocketAddr::V6(_) => None,
-    };
-    let dst_port = request.target_port;
-    let banner_timeout_ms = request
-        .banner_timeout_ms
-        .unwrap_or(DEFAULT_BANNER_TIMEOUT_MS);
-    let sample_count = request.sample_count as usize;
-
-    for i in 0..sample_count {
-        let start = Instant::now();
-        let is_last = i == sample_count - 1;
-
-        // Use async connect so tokio threads yield while waiting — enables
-        // true concurrency when multiple collect_timing_samples tasks are
-        // spawned in parallel (the old TcpStream::connect_timeout was
-        // blocking and serialised all tasks on the tokio thread pool).
-        let connect_result =
-            tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr)).await;
-
-        match connect_result {
-            Ok(Ok(stream)) => {
-                let elapsed = start.elapsed();
-                let src_port = stream.local_addr().map(|a| a.port()).unwrap_or(0);
-
-                let micros = match (&bpf, ipv4_info) {
-                    (Some(bpf_arc), Some(dst_ip)) => {
-                        // IPv4 + BPF: lock briefly for kernel timestamp read
-                        let bpf_ref = bpf_arc.lock().await;
-                        let delta = bpf_ref.read_timing(dst_ip, dst_port, src_port);
-                        bpf_ref.delete_entry(dst_ip, dst_port, src_port);
-                        drop(bpf_ref);
-                        match delta {
-                            Some(ns) => ns as f64 / 1000.0,
-                            None => elapsed.as_micros() as f64,
-                        }
-                    }
-                    _ => {
-                        // IPv6 or no BPF: userspace timing
-                        elapsed.as_micros() as f64
-                    }
-                };
-
-                samples.push(micros);
-
-                // On the last sample, attempt passive banner capture.
-                // Convert to std stream and restore blocking mode before read.
-                if is_last {
-                    if let Ok(mut std_stream) = stream.into_std() {
-                        let _ = std_stream.set_nonblocking(false);
-                        banner = read_banner(&mut std_stream, banner_timeout_ms);
-                    }
-                }
-            }
-            Ok(Err(e)) => {
-                last_error = Some(format!("{}", e));
-                // Early bail-out: if no samples collected yet, the port is
-                // unreachable and remaining attempts will also fail.
-                if samples.is_empty() {
-                    break;
-                }
-            }
-            Err(_) => {
-                // tokio::time::timeout elapsed
-                last_error = Some("connection timed out".to_string());
-                if samples.is_empty() {
-                    break;
-                }
-            }
-        }
-    }
-
-    if samples.is_empty() {
-        return TimingResult::error(
-            request,
-            last_error.unwrap_or_else(|| "No samples collected".to_string()),
-        );
-    }
-
-    let stats = calculate_stats(&samples);
-    let precision_class = match &bpf {
-        Some(bpf_arc) => {
-            let bpf_ref = bpf_arc.lock().await;
-            bpf_ref.backend().precision_class().to_string()
-        }
-        None => "userspace".to_string(),
-    };
-
-    TimingResult {
-        request_id: request.request_id,
-        scan_id: request.scan_id,
-        target_host: request.target_host.clone(),
-        target_port: request.target_port,
-        samples,
-        precision_class,
-        stats,
-        collected_at: chrono::Utc::now(),
-        error: None,
-        embedding: None,
-        banner,
-        source_ip: None,
-        worker_node: None,
-    }
-}
-
-/// Attempt to read a banner from an open TCP stream.
-///
-/// Sets a short read timeout and tries to read up to MAX_BANNER_BYTES.
-/// Returns `Some(bytes)` if any data was received, `None` otherwise.
-fn read_banner(stream: &mut TcpStream, timeout_ms: u32) -> Option<Vec<u8>> {
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(timeout_ms as u64)));
-    let mut buf = vec![0u8; MAX_BANNER_BYTES];
-    match stream.read(&mut buf) {
-        Ok(0) => None,
-        Ok(n) => {
-            buf.truncate(n);
-            Some(buf)
-        }
-        Err(_) => None,
-    }
-}
 
 use super::xdp::TimingMapEntry;
 use crate::scanner::syn_sender::SynScanner;
@@ -233,8 +84,7 @@ async fn poll_bpf_timing_entry(
 ///
 /// Banner is always `None` — SYN-only probes never complete a TCP handshake.
 ///
-/// IPv6 targets are not supported; callers should fall back to
-/// `collect_timing_samples()` for IPv6.
+/// IPv6 targets are not supported and return an error.
 pub async fn collect_timing_samples_raw(
     request: &TimingRequest,
     bpf: Arc<Mutex<BpfTimingCollector>>,
@@ -265,7 +115,7 @@ pub async fn collect_timing_samples_raw(
     let mut last_error: Option<String> = None;
 
     for _i in 0..sample_count {
-        let start = Instant::now();
+        let _start = Instant::now();
 
         // Send a single raw SYN probe via AF_XDP TX
         let probe = {
@@ -302,15 +152,15 @@ pub async fn collect_timing_samples_raw(
                 samples.push(e.delta_ns as f64 / 1000.0);
             }
             Some(ref e) if e.port_state == PortState::Open => {
-                // Response-only entry: AF_XDP TX bypassed TC egress (XDP_COPY mode uses
-                // dev_direct_xmit which skips TC). Port IS open — SYN-ACK confirmed by
-                // BPF map. Fall back to userspace elapsed time for degraded timing.
-                tracing::debug!(
+                // delta_ns=0 with Open port means TC egress didn't fire (e.g. XDP_COPY
+                // mode uses dev_direct_xmit which skips TC). The SYN-ACK was received
+                // but no egress timestamp exists. Skip this sample rather than silently
+                // falling back to userspace timing.
+                tracing::warn!(
                     dst_ip = %target_ipv4,
                     dst_port,
-                    "AF_XDP TX bypassed TC egress — open port detected, using userspace timing"
+                    "BPF delta_ns=0 for Open port — TC egress may not have fired, skipping sample"
                 );
-                samples.push(start.elapsed().as_micros() as f64);
             }
             Some(_) => {
                 // Port is closed (RST) or unreachable (ICMP) — not an open port.
@@ -386,79 +236,9 @@ pub(crate) fn resolve_address(host: &str, port: u16) -> Result<SocketAddr, Strin
         .ok_or_else(|| "No addresses found".to_string())
 }
 
-/// Collect timing samples synchronously (test-only, no BPF).
-#[cfg(test)]
-pub(crate) fn collect_timing_samples_sync(request: &TimingRequest) -> TimingResult {
-    let addr = match resolve_address(&request.target_host, request.target_port) {
-        Ok(addr) => addr,
-        Err(e) => return TimingResult::error(request, format!("DNS resolution failed: {}", e)),
-    };
-
-    let timeout = Duration::from_millis(request.timeout_ms as u64);
-    let mut samples = Vec::with_capacity(request.sample_count as usize);
-    let mut last_error: Option<String> = None;
-    let mut banner: Option<Vec<u8>> = None;
-    let banner_timeout_ms = request
-        .banner_timeout_ms
-        .unwrap_or(DEFAULT_BANNER_TIMEOUT_MS);
-    let sample_count = request.sample_count as usize;
-
-    for i in 0..sample_count {
-        let start = Instant::now();
-        let is_last = i == sample_count - 1;
-
-        match TcpStream::connect_timeout(&addr, timeout) {
-            Ok(mut stream) => {
-                let elapsed = start.elapsed();
-                samples.push(elapsed.as_micros() as f64);
-
-                // On the last sample, attempt passive banner capture
-                if is_last {
-                    banner = read_banner(&mut stream, banner_timeout_ms);
-                }
-
-                drop(stream);
-            }
-            Err(e) => {
-                last_error = Some(format!("{}", e));
-                if samples.is_empty() {
-                    break;
-                }
-            }
-        }
-    }
-
-    if samples.is_empty() {
-        return TimingResult::error(
-            request,
-            last_error.unwrap_or_else(|| "No samples collected".to_string()),
-        );
-    }
-
-    let stats = calculate_stats(&samples);
-
-    TimingResult {
-        request_id: request.request_id,
-        scan_id: request.scan_id,
-        target_host: request.target_host.clone(),
-        target_port: request.target_port,
-        samples,
-        precision_class: "userspace".to_string(),
-        stats,
-        collected_at: chrono::Utc::now(),
-        error: None,
-        embedding: None,
-        banner,
-        source_ip: None,
-        worker_node: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::net::TcpListener;
     use uuid::Uuid;
 
     // ===========================================
@@ -561,42 +341,6 @@ mod tests {
         }
     }
 
-    fn create_request(host: &str, port: u16, samples: u32, timeout_ms: u32) -> TimingRequest {
-        TimingRequest {
-            request_id: Uuid::new_v4(),
-            scan_id: None,
-            target_host: host.to_string(),
-            target_port: port,
-            sample_count: samples,
-            timeout_ms,
-            banner_timeout_ms: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_collect_timing_samples_async_no_bpf() {
-        // Verify collect_timing_samples works correctly with the async connect path
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        std::thread::spawn(move || {
-            for _ in 0..3 {
-                let _ = listener.accept();
-            }
-        });
-
-        let request = create_request("127.0.0.1", port, 3, 2000);
-        let result = collect_timing_samples(&request, None).await;
-
-        assert!(
-            result.error.is_none(),
-            "expected no error: {:?}",
-            result.error
-        );
-        assert_eq!(result.samples.len(), 3);
-        assert_eq!(result.precision_class, "userspace");
-    }
-
     #[test]
     fn test_resolve_address_ip() {
         let addr = resolve_address("127.0.0.1", 80).unwrap();
@@ -607,229 +351,5 @@ mod tests {
     fn test_resolve_address_invalid() {
         let result = resolve_address("this-host-does-not-exist-12345.invalid", 80);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_connection_refused_returns_error() {
-        // Port 1 is unlikely to be open
-        let request = create_request("127.0.0.1", 1, 3, 1000);
-        let result = collect_timing_samples_sync(&request);
-
-        // Should have error because connection refused
-        assert!(result.error.is_some() || result.samples.is_empty());
-        if result.error.is_some() {
-            assert_eq!(result.precision_class, "error");
-        }
-    }
-
-    #[test]
-    fn test_banner_captured_from_service() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        let banner_text = b"SSH-2.0-OpenSSH_8.9\r\n";
-
-        // Server thread: accept connections, send banner on each
-        let handle = std::thread::spawn(move || {
-            // Accept enough connections for all samples
-            for _ in 0..3 {
-                if let Ok((mut stream, _)) = listener.accept() {
-                    let _ = stream.write_all(banner_text);
-                    // Keep stream alive briefly so client can read
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-            }
-        });
-
-        // Give server a moment to start
-        std::thread::sleep(Duration::from_millis(10));
-
-        let request = TimingRequest {
-            request_id: Uuid::new_v4(),
-            scan_id: None,
-            target_host: "127.0.0.1".to_string(),
-            target_port: port,
-            sample_count: 3,
-            timeout_ms: 2000,
-            banner_timeout_ms: Some(500),
-        };
-
-        let result = collect_timing_samples_sync(&request);
-
-        handle.join().unwrap();
-
-        assert!(result.error.is_none(), "expected no error");
-        assert_eq!(result.samples.len(), 3);
-        assert!(
-            result.banner.is_some(),
-            "expected banner to be captured on last sample"
-        );
-        assert_eq!(result.banner.unwrap(), banner_text.to_vec());
-    }
-
-    #[test]
-    fn test_banner_none_when_service_silent() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        // Server thread: accept connections but send nothing
-        let handle = std::thread::spawn(move || {
-            for _ in 0..2 {
-                if let Ok((_stream, _)) = listener.accept() {
-                    std::thread::sleep(Duration::from_millis(300));
-                }
-            }
-        });
-
-        std::thread::sleep(Duration::from_millis(10));
-
-        let request = TimingRequest {
-            request_id: Uuid::new_v4(),
-            scan_id: None,
-            target_host: "127.0.0.1".to_string(),
-            target_port: port,
-            sample_count: 2,
-            timeout_ms: 2000,
-            banner_timeout_ms: Some(100),
-        };
-
-        let result = collect_timing_samples_sync(&request);
-
-        handle.join().unwrap();
-
-        assert!(result.error.is_none(), "expected no error");
-        assert_eq!(result.samples.len(), 2);
-        assert!(
-            result.banner.is_none(),
-            "expected no banner when service sends nothing"
-        );
-    }
-
-    #[test]
-    fn test_banner_max_512_bytes() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        // Server thread: send 1024 bytes
-        let big_data = vec![b'A'; 1024];
-        let handle = std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let _ = stream.write_all(&big_data);
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        });
-
-        std::thread::sleep(Duration::from_millis(10));
-
-        let request = TimingRequest {
-            request_id: Uuid::new_v4(),
-            scan_id: None,
-            target_host: "127.0.0.1".to_string(),
-            target_port: port,
-            sample_count: 1,
-            timeout_ms: 2000,
-            banner_timeout_ms: Some(500),
-        };
-
-        let result = collect_timing_samples_sync(&request);
-
-        handle.join().unwrap();
-
-        assert!(result.banner.is_some(), "expected banner");
-        let banner = result.banner.unwrap();
-        assert!(
-            banner.len() <= MAX_BANNER_BYTES,
-            "banner should be capped at {} bytes, got {}",
-            MAX_BANNER_BYTES,
-            banner.len()
-        );
-    }
-
-    #[test]
-    fn test_banner_only_on_last_sample() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        let banner_text = b"220 mail.example.com ESMTP\r\n";
-
-        // Server thread: accept all connections and send banner
-        let handle = std::thread::spawn(move || {
-            for _ in 0..5 {
-                if let Ok((mut stream, _)) = listener.accept() {
-                    let _ = stream.write_all(banner_text);
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-        });
-
-        std::thread::sleep(Duration::from_millis(10));
-
-        let request = TimingRequest {
-            request_id: Uuid::new_v4(),
-            scan_id: None,
-            target_host: "127.0.0.1".to_string(),
-            target_port: port,
-            sample_count: 5,
-            timeout_ms: 2000,
-            banner_timeout_ms: Some(500),
-        };
-
-        let result = collect_timing_samples_sync(&request);
-
-        handle.join().unwrap();
-
-        assert!(result.error.is_none());
-        assert_eq!(result.samples.len(), 5, "all 5 samples should succeed");
-        // Banner should be captured (from the last sample)
-        assert!(result.banner.is_some(), "expected banner from last sample");
-        assert_eq!(result.banner.unwrap(), banner_text.to_vec());
-    }
-
-    #[test]
-    fn test_timing_unaffected_by_banner_read() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        // Server thread: accept connections, send banner with delay
-        let handle = std::thread::spawn(move || {
-            for _ in 0..5 {
-                if let Ok((mut stream, _)) = listener.accept() {
-                    // Delay banner send to ensure timing is already recorded
-                    std::thread::sleep(Duration::from_millis(50));
-                    let _ = stream.write_all(b"SSH-2.0-Test\r\n");
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-            }
-        });
-
-        std::thread::sleep(Duration::from_millis(10));
-
-        let request = TimingRequest {
-            request_id: Uuid::new_v4(),
-            scan_id: None,
-            target_host: "127.0.0.1".to_string(),
-            target_port: port,
-            sample_count: 5,
-            timeout_ms: 2000,
-            banner_timeout_ms: Some(200),
-        };
-
-        let result = collect_timing_samples_sync(&request);
-
-        handle.join().unwrap();
-
-        assert!(result.error.is_none());
-        assert_eq!(result.samples.len(), 5);
-
-        // All samples should be reasonable TCP handshake times (< 50ms = 50000µs)
-        // The banner read delay should NOT inflate the timing samples
-        for (i, sample) in result.samples.iter().enumerate() {
-            assert!(
-                *sample < 50000.0,
-                "sample {} = {}µs, should be < 50000µs (banner read should not inflate timing)",
-                i,
-                sample
-            );
-        }
     }
 }

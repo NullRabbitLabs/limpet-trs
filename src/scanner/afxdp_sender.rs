@@ -59,9 +59,8 @@ pub trait AfXdpSend: Send {
     /// queuing. Returns `false` for raw socket fallback, where BPF map polling
     /// handles response detection instead of the AF_XDP RX ring.
     ///
-    /// Used to select the appropriate timing collection path: raw SYN probes
-    /// (`collect_timing_samples_raw`) when RX is available, or TCP connect
-    /// (`collect_timing_samples`) when it is not.
+    /// Used to determine whether the AF_XDP RX ring is available for
+    /// response delivery in the raw SYN probe timing path.
     fn has_rx(&self) -> bool {
         true
     }
