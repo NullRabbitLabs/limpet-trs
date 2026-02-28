@@ -79,5 +79,5 @@ jobs:
           gh release create latest \
             --title "Latest build (${SHORT})" \
             --notes "Automated build from commit ${SHA}." \
-            --prerelease \
+            --latest \
             "${ARCHIVE}"
