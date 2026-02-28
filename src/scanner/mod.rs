@@ -8,12 +8,16 @@
 pub mod afxdp_sender;
 pub mod collector;
 #[cfg(target_os = "linux")]
+pub mod hybrid_sender;
+#[cfg(target_os = "linux")]
 pub mod raw_socket_sender;
 pub mod stealth;
 pub mod syn_sender;
 
 pub use afxdp_sender::{AfXdpSend, MockAfXdpSender, RxFrame};
 pub use collector::DiscoveryCollector;
+#[cfg(target_os = "linux")]
+pub use hybrid_sender::HybridSender;
 #[cfg(target_os = "linux")]
 pub use raw_socket_sender::RawSocketSender;
 pub use stealth::{PacingProfile, StealthProfile};

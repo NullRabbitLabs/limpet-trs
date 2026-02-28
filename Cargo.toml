@@ -1,6 +1,6 @@
 [package]
 name = "limpet"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "High-precision network scanner with eBPF/XDP kernel-bypass timing — nmap with nanosecond RTT measurement and ML-ready feature extraction"
 license = "MIT"

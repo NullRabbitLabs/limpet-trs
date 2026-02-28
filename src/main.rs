@@ -38,6 +38,7 @@ async fn main() {
                 args.samples,
                 args.timeout,
                 args.output,
+                args.interface,
             )
             .await
             {

@@ -11,7 +11,7 @@ pub mod xdp;
 
 pub use embeddings::{cosine_similarity, extract_features, FeatureVector};
 pub use stats::{calculate_stats, mean, percentile, std_dev};
-pub use userspace::{collect_timing_samples, collect_timing_samples_raw};
+pub use userspace::collect_timing_samples_raw;
 pub use xdp::{
     BpfReader, BpfTimingCollector, BpfTimingError, MockBpfTimingCollector, TimingMapEntry,
 };
