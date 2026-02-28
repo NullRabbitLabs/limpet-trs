@@ -92,21 +92,19 @@ impl BpfTimingCollector {
         // but netlink-based XDP (ip link set xdp) persists after process exit.
         let xdp_handle = Xdp::new(skel.progs.xdp_timing_ingress.as_fd());
         match xdp_handle.query_id(ifindex as i32, XdpFlags::NONE) {
-            Ok(old_id) if old_id > 0 => {
-                match xdp_handle.detach(ifindex as i32, XdpFlags::NONE) {
-                    Ok(()) => tracing::info!(
-                        interface = %interface,
-                        old_prog_id = old_id,
-                        "Detached stale XDP program"
-                    ),
-                    Err(e) => tracing::warn!(
-                        interface = %interface,
-                        old_prog_id = old_id,
-                        error = %e,
-                        "Failed to detach stale XDP program"
-                    ),
-                }
-            }
+            Ok(old_id) if old_id > 0 => match xdp_handle.detach(ifindex as i32, XdpFlags::NONE) {
+                Ok(()) => tracing::info!(
+                    interface = %interface,
+                    old_prog_id = old_id,
+                    "Detached stale XDP program"
+                ),
+                Err(e) => tracing::warn!(
+                    interface = %interface,
+                    old_prog_id = old_id,
+                    error = %e,
+                    "Failed to detach stale XDP program"
+                ),
+            },
             _ => {} // No existing XDP — expected on first run
         }
 
@@ -168,7 +166,9 @@ impl BpfTimingCollector {
         let mut cleanup = TcHook::new(fd);
         cleanup.ifindex(ifindex).attach_point(TC_EGRESS);
         match cleanup.destroy() {
-            Ok(()) => tracing::debug!(interface = %interface, "Destroyed existing clsact qdisc (stale hooks cleaned)"),
+            Ok(()) => {
+                tracing::debug!(interface = %interface, "Destroyed existing clsact qdisc (stale hooks cleaned)")
+            }
             Err(e) => {
                 let msg = e.to_string();
                 // ENOENT / EINVAL are expected on first run (no existing qdisc).

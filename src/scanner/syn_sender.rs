@@ -73,8 +73,8 @@ pub fn detect_source_ip(target: Ipv4Addr) -> Result<Ipv4Addr, ScanError> {
 /// match that interface — not whatever the OS routing table selects (which
 /// may point to a VPN/WireGuard tunnel on a different interface).
 pub fn interface_source_ip(ifname: &str) -> Result<Ipv4Addr, ScanError> {
-    let addrs = nix::ifaddrs::getifaddrs()
-        .map_err(|e| ScanError::RawSocket(format!("getifaddrs: {e}")))?;
+    let addrs =
+        nix::ifaddrs::getifaddrs().map_err(|e| ScanError::RawSocket(format!("getifaddrs: {e}")))?;
 
     for addr in addrs {
         if addr.interface_name != ifname {

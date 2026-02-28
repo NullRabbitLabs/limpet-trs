@@ -194,7 +194,8 @@ pub async fn run_scan(
     // Detect source IP — prefer the interface's own IP so that AF_XDP raw
     // frames use the correct source address even when a VPN/WireGuard tunnel
     // would otherwise route traffic through a different interface.
-    let src_ip = interface_source_ip(&iface).or_else(|_| detect_source_ip(target_ip))
+    let src_ip = interface_source_ip(&iface)
+        .or_else(|_| detect_source_ip(target_ip))
         .map_err(|e| format!("source IP detection failed: {e}"))?;
 
     // Build stealth profile with pacing applied
@@ -263,8 +264,7 @@ pub async fn run_scan(
         // have received responses. Fall back to full timeout as the deadline.
         {
             let poll_interval = Duration::from_millis(5);
-            let deadline =
-                tokio::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
             let total_probes = all_probes.len();
 
             loop {
@@ -348,7 +348,8 @@ pub async fn run_time(
     let bpf = Arc::new(Mutex::new(bpf_collector));
 
     // Detect source IP — prefer the interface's own IP (see scan_ports comment).
-    let src_ip = interface_source_ip(&iface).or_else(|_| detect_source_ip(target_ip))
+    let src_ip = interface_source_ip(&iface)
+        .or_else(|_| detect_source_ip(target_ip))
         .map_err(|e| format!("source IP detection failed: {e}"))?;
 
     // Aggressive pacing (5ms delay, 10% jitter) — stealth is irrelevant for RTT measurement,
@@ -392,9 +393,7 @@ pub async fn run_time(
             }
         };
 
-        let scanner = Arc::new(Mutex::new(SynScanner::new_with_sender(
-            stealth, xdp_sender,
-        )));
+        let scanner = Arc::new(Mutex::new(SynScanner::new_with_sender(stealth, xdp_sender)));
 
         let request = TimingRequest {
             request_id: Uuid::new_v4(),

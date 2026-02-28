@@ -127,10 +127,7 @@ mod tests {
     /// zeroed `AfXdpSender` internals.
     fn make_test_sender(src_ip: Ipv4Addr) -> ManuallyDrop<HybridSender> {
         ManuallyDrop::new(HybridSender {
-            raw_tx: RawSocketSender {
-                fd: -1,
-                src_ip,
-            },
+            raw_tx: RawSocketSender { fd: -1, src_ip },
             // SAFETY: zeroed AfXdpSender is never used (only raw_tx methods called)
             // and ManuallyDrop prevents Drop from running on the invalid pointers.
             xdp_rx: unsafe { std::mem::zeroed() },
