@@ -244,19 +244,23 @@ pub async fn run_scan(
 
         let mut all_ports: Vec<ScannedPort> = Vec::with_capacity(ports.len());
 
-        // Send all probe batches
+        // Send probe batches, draining AF_XDP RX ring between batches to
+        // prevent overflow for fast targets (RTT < 1ms)
         let mut all_probes = Vec::new();
         for batch in ports.chunks(batch_size) {
             let result = scanner
                 .send_syn_batch(target_ip, batch)
                 .map_err(|e| format!("scan error: {e}"))?;
             all_probes.extend(result.probed_ports);
+
+            // Drain AF_XDP RX ring between batches to prevent overflow
+            scanner.poll_rx(0);
         }
 
         // Poll BPF map for early return — check every 50ms if all probes
         // have received responses. Fall back to full timeout as the deadline.
         {
-            let poll_interval = Duration::from_millis(50);
+            let poll_interval = Duration::from_millis(5);
             let deadline =
                 tokio::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
             let total_probes = all_probes.len();
@@ -345,8 +349,9 @@ pub async fn run_time(
     let src_ip =
         detect_source_ip(target_ip).map_err(|e| format!("source IP detection failed: {e}"))?;
 
-    // Hardcode Normal pacing (50ms delay, 30% jitter) — sensible for repeated RTT samples
-    let pacing = PacingProfile::Normal;
+    // Aggressive pacing (5ms delay, 10% jitter) — stealth is irrelevant for RTT measurement,
+    // we want fast, low-variance samples
+    let pacing = PacingProfile::Aggressive;
     let mut stealth = StealthProfile::linux_6x_default();
     pacing.apply_to(&mut stealth);
 

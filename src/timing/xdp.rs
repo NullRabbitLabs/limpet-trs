@@ -106,6 +106,19 @@ impl BpfTimingCollector {
         // Attach TC egress program — required, no fallback
         let tc_hook = Self::attach_tc_egress(&skel, ifindex as i32, interface)?;
 
+        // Verify BPF map is accessible by writing and reading a sentinel entry.
+        // If the map isn't accessible (e.g. pinned by another program), fail
+        // immediately rather than producing a bogus scan with no timing data.
+        let sentinel_key = build_key_bytes(0, 0, 0);
+        let sentinel_value = [0u8; TIMING_VALUE_SIZE];
+        skel.maps
+            .timing_map
+            .update(&sentinel_key, &sentinel_value, libbpf_rs::MapFlags::ANY)
+            .map_err(|e| {
+                BpfTimingError::MapError(format!("BPF map write verification failed: {e}"))
+            })?;
+        skel.maps.timing_map.delete(&sentinel_key).ok(); // cleanup, ignore if already gone
+
         Ok(Self {
             skel,
             _xdp_link: xdp_link,
@@ -131,8 +144,19 @@ impl BpfTimingCollector {
         // ignored because the qdisc may not exist on first start.
         let mut cleanup = TcHook::new(fd);
         cleanup.ifindex(ifindex).attach_point(TC_EGRESS);
-        if cleanup.destroy().is_ok() {
-            tracing::debug!(interface = %interface, "Destroyed existing clsact qdisc (stale hooks cleaned)");
+        match cleanup.destroy() {
+            Ok(()) => tracing::debug!(interface = %interface, "Destroyed existing clsact qdisc (stale hooks cleaned)"),
+            Err(e) => {
+                let msg = e.to_string();
+                // ENOENT is expected on first run (no existing qdisc)
+                if !msg.contains("ENOENT") && !msg.contains("No such file") {
+                    tracing::warn!(
+                        interface = %interface,
+                        error = %e,
+                        "Failed to destroy existing TC qdisc — another BPF program may be attached"
+                    );
+                }
+            }
         }
 
         let mut hook = TcHook::new(fd);
@@ -558,11 +582,21 @@ pub fn parse_timing_value_v2(value: &[u8]) -> Option<TimingMapEntry> {
 
     if has_syn {
         // Normal TC+XDP path: compute timing delta
-        if response_ts_ns <= syn_ts_ns {
-            return None;
-        }
+        let delta_ns = if response_ts_ns > syn_ts_ns {
+            response_ts_ns - syn_ts_ns
+        } else {
+            // Clock inversion: on multi-socket NUMA systems, bpf_ktime_get_ns()
+            // can produce slight inversions (~100ns). Return delta_ns=0 with valid
+            // port state rather than discarding the entry entirely.
+            tracing::warn!(
+                syn_ts_ns,
+                response_ts_ns,
+                "clock inversion: response_ts <= syn_ts (NUMA skew?), returning delta_ns=0"
+            );
+            0
+        };
         Some(TimingMapEntry {
-            delta_ns: response_ts_ns - syn_ts_ns,
+            delta_ns,
             port_state,
             response_ttl,
             response_win,

@@ -157,6 +157,9 @@ impl SynScanner {
             let src_port = self.allocate_src_port(dst_ip_u32, dst_port)?;
             let (mut packet, isn) = self.build_syn_packet(src_ip, target_ip, src_port, dst_port);
 
+            // Capture sent_at BEFORE send_raw() — the TC egress BPF hook fires
+            // during send_raw(), so recording after would be ~100-500µs late
+            let sent_at = Instant::now();
             self.get_sender()?.send_raw(&packet)?;
 
             // Zero packet bytes to avoid leaking data
@@ -165,7 +168,7 @@ impl SynScanner {
             records.push(ProbeRecord {
                 dst_port,
                 src_port,
-                sent_at: Instant::now(),
+                sent_at,
                 isn,
             });
 
@@ -198,13 +201,16 @@ impl SynScanner {
         let src_port = self.allocate_src_port(dst_ip_u32, dst_port)?;
         let (packet, isn) = self.build_syn_packet(src_ip, target_ip, src_port, dst_port);
 
+        // Capture sent_at BEFORE send_raw() — the TC egress BPF hook fires
+        // during send_raw(), so recording after would be ~100-500µs late
+        let sent_at = Instant::now();
         self.get_sender()?.send_raw(&packet)?;
         self.probe_counter += 1;
 
         Ok(ProbeRecord {
             dst_port,
             src_port,
-            sent_at: Instant::now(),
+            sent_at,
             isn,
         })
     }

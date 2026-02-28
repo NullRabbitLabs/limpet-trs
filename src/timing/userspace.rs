@@ -9,7 +9,6 @@ use tokio::sync::Mutex;
 
 use crate::{TimingRequest, TimingResult};
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::time::Instant;
 
 use super::stats::calculate_stats;
 use super::xdp::BpfTimingCollector;
@@ -113,10 +112,9 @@ pub async fn collect_timing_samples_raw(
 
     let mut samples = Vec::with_capacity(sample_count);
     let mut last_error: Option<String> = None;
+    let mut skipped_count: usize = 0;
 
     for _i in 0..sample_count {
-        let _start = Instant::now();
-
         // Send a single raw SYN probe via AF_XDP TX
         let probe = {
             let mut scanner_ref = scanner.lock().await;
@@ -156,6 +154,7 @@ pub async fn collect_timing_samples_raw(
                 // mode uses dev_direct_xmit which skips TC). The SYN-ACK was received
                 // but no egress timestamp exists. Skip this sample rather than silently
                 // falling back to userspace timing.
+                skipped_count += 1;
                 tracing::warn!(
                     dst_ip = %target_ipv4,
                     dst_port,
@@ -206,7 +205,12 @@ pub async fn collect_timing_samples_raw(
     let stats = calculate_stats(&samples);
     let precision_class = {
         let bpf_ref = bpf.lock().await;
-        bpf_ref.backend().precision_class().to_string()
+        let base = bpf_ref.backend().precision_class().to_string();
+        if skipped_count > 0 {
+            format!("{base}_degraded")
+        } else {
+            base
+        }
     };
 
     TimingResult {

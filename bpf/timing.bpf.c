@@ -64,10 +64,11 @@ struct timing_value {
 
 // Shared timing map between TC and XDP programs
 // LRU hash for bounded memory usage
-// 16384 entries to support full-range port scans (65535 ports per target)
+// 65536 entries to support full-range port scans (65535 ports per target)
+// Memory cost: 65536 × 32 bytes ≈ 2MB — trivial
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 16384);
+    __uint(max_entries, 65536);
     __type(key, struct timing_key);
     __type(value, struct timing_value);
 } timing_map SEC(".maps");
@@ -192,14 +193,17 @@ int xdp_timing_ingress(struct xdp_md *ctx)
         // SYN-ACK: port is open
         if (tcp->syn && tcp->ack) {
             struct timing_value *val = bpf_map_lookup_elem(&timing_map, &key);
-            if (val) {
-                // Normal path: TC recorded the SYN, update with response
+            if (val && val->response_ts_ns == 0) {
+                // Normal path: TC recorded the SYN, update with first response only.
+                // Guard: if a SYN-ACK is followed by RST (stateful firewall teardown),
+                // the RST would overwrite response_ts_ns with a later timestamp,
+                // corrupting the RTT. First response wins.
                 val->response_ts_ns = bpf_ktime_get_ns();
                 val->flags |= (2 | TIMING_VERSION_1);   // bit 1: synack, version 1
                 val->port_state = 1;                      // open
                 val->response_ttl = ip->ttl;
                 val->response_win = bpf_ntohs(tcp->window);
-            } else {
+            } else if (!val) {
                 // AF_XDP path: TC didn't see the SYN, create response-only entry
                 struct timing_value new_val = {
                     .syn_ts_ns = 0,
@@ -220,13 +224,14 @@ int xdp_timing_ingress(struct xdp_md *ctx)
         // RST: port is closed
         if (tcp->rst) {
             struct timing_value *val = bpf_map_lookup_elem(&timing_map, &key);
-            if (val) {
+            if (val && val->response_ts_ns == 0) {
+                // First response wins — don't overwrite if already recorded
                 val->response_ts_ns = bpf_ktime_get_ns();
                 val->flags |= (4 | TIMING_VERSION_1);   // bit 2: rst, version 1
                 val->port_state = 2;                      // closed
                 val->response_ttl = ip->ttl;
                 val->response_win = bpf_ntohs(tcp->window);
-            } else {
+            } else if (!val) {
                 struct timing_value new_val = {
                     .syn_ts_ns = 0,
                     .response_ts_ns = bpf_ktime_get_ns(),
@@ -287,13 +292,14 @@ int xdp_timing_ingress(struct xdp_md *ctx)
         };
 
         struct timing_value *val = bpf_map_lookup_elem(&timing_map, &key);
-        if (val) {
+        if (val && val->response_ts_ns == 0) {
+            // First response wins — don't overwrite if already recorded
             val->response_ts_ns = bpf_ktime_get_ns();
             val->flags |= (8 | TIMING_VERSION_1);   // bit 3: icmp, version 1
             val->port_state = 3;                      // unreachable
             val->response_ttl = ip->ttl;              // outer IP TTL
             val->response_win = 0;                    // no TCP window for ICMP
-        } else {
+        } else if (!val) {
             struct timing_value new_val = {
                 .syn_ts_ns = 0,
                 .response_ts_ns = bpf_ktime_get_ns(),
