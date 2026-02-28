@@ -4,6 +4,7 @@
 //! ML-ready feature extraction. Usable as a library or via the CLI.
 
 pub mod cli;
+pub mod engine;
 pub mod scanner;
 pub mod timing;
 
@@ -13,6 +14,7 @@ use std::net::Ipv4Addr;
 use uuid::Uuid;
 
 // Re-export key backend types for library users.
+pub use engine::{Engine, ScanEngineConfig};
 pub use scanner::stealth::{PacingProfile, StealthProfile};
 pub use scanner::syn_sender::ScanError;
 pub use timing::detect_timing_backend;
@@ -228,6 +230,9 @@ pub struct ScanRequest {
     pub timeout_ms: u32,
     /// Network interface for XDP (None = auto-detect).
     pub interface: Option<String>,
+    /// Maximum number of ports to scan (truncates expanded port list).
+    #[serde(default)]
+    pub max_ports: Option<u32>,
 }
 
 /// Result of a port scan.

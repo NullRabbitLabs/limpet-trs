@@ -1,24 +1,19 @@
 //! CLI entrypoint for limpet.
 //!
-//! Parses arguments, resolves DNS, selects the timing backend, runs the scan,
-//! and formats output. On Linux with XDP available, uses kernel-bypass timing.
+//! Parses arguments, selects the timing backend via the Engine, runs the scan,
+//! and formats output.
 
 pub mod output;
 
-use std::net::Ipv4Addr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use chrono::Utc;
-use clap::{Args, Parser, Subcommand, ValueEnum};
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::scanner::collector::DiscoveryCollector;
-use crate::scanner::stealth::{PacingProfile, StealthProfile};
-use crate::scanner::syn_sender::{detect_source_ip, interface_source_ip, SynScanner};
-use crate::{PortSpec, ScanResult, ScannedPort, TimingRequest};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::engine::{self, Engine, ScanEngineConfig};
+use crate::scanner::stealth::PacingProfile;
+use crate::{PortSpec, ScanRequest, TimingRequest};
+
+pub use engine::resolve_target;
 pub use output::{format_json, format_pretty};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,36 +137,12 @@ pub enum OutputFmt {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DNS resolution
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Resolve a hostname or IP string to an `Ipv4Addr`.
-///
-/// Returns `(ip, hostname)` where `hostname` is `Some` if DNS was performed.
-pub fn resolve_target(target: &str) -> Result<(Ipv4Addr, Option<String>), String> {
-    if let Ok(ip) = target.parse::<Ipv4Addr>() {
-        return Ok((ip, None));
-    }
-    use std::net::ToSocketAddrs;
-    let addrs = format!("{target}:0")
-        .to_socket_addrs()
-        .map_err(|e| format!("DNS resolution failed for '{target}': {e}"))?;
-    for addr in addrs {
-        if let std::net::IpAddr::V4(ip) = addr.ip() {
-            return Ok((ip, Some(target.to_string())));
-        }
-    }
-    Err(format!("no IPv4 address found for '{target}'"))
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Scan engine
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Run a port scan and return the result.
 ///
-/// Requires Linux with CAP_BPF + CAP_NET_ADMIN (sudo). On macOS or without
-/// BPF support, returns an error.
+/// Creates an Engine, builds a ScanRequest, and delegates to `engine.discover()`.
 pub async fn run_scan(
     target: &str,
     port_spec: PortSpec,
@@ -179,148 +150,30 @@ pub async fn run_scan(
     timeout_ms: u32,
     interface: Option<String>,
 ) -> Result<ScanResult, String> {
-    let start = Instant::now();
-    let (target_ip, target_hostname) = resolve_target(target)?;
-    let request_id = Uuid::new_v4();
+    let engine = Engine::new(ScanEngineConfig {
+        interface: interface.clone(),
+        passthrough: false,
+    });
 
-    // Initialise XDP/BPF timing backend (Linux only)
-    let (backend, bpf_collector) = crate::timing::detect_timing_backend(&interface)
-        .map_err(|e| format!("BPF initialisation failed: {e}"))?;
+    let request = ScanRequest {
+        request_id: Uuid::new_v4(),
+        target: target.to_string(),
+        ports: port_spec,
+        pacing,
+        timeout_ms,
+        interface,
+        max_ports: None,
+    };
 
-    let backend_str = backend.as_str().to_string();
-    let iface = bpf_collector.interface().to_string();
-    let bpf = Arc::new(Mutex::new(bpf_collector));
-
-    // Detect source IP — prefer the interface's own IP so that AF_XDP raw
-    // frames use the correct source address even when a VPN/WireGuard tunnel
-    // would otherwise route traffic through a different interface.
-    let src_ip = interface_source_ip(&iface)
-        .or_else(|_| detect_source_ip(target_ip))
-        .map_err(|e| format!("source IP detection failed: {e}"))?;
-
-    // Build stealth profile with pacing applied
-    let mut stealth = StealthProfile::linux_6x_default();
-    pacing.apply_to(&mut stealth);
-
-    let ports = port_spec.expand();
-    let batch_size = pacing.batch_size();
-    let timeout = Duration::from_millis(timeout_ms as u64);
-
-    // Create AF_XDP sender or fall back to raw socket (Linux only)
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (iface, bpf, src_ip, stealth, ports, batch_size, timeout);
-        return Err("XDP scanning requires Linux with CAP_BPF and CAP_NET_ADMIN".to_string());
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        use crate::scanner::afxdp_sender::AfXdpSend;
-        use crate::scanner::hybrid_sender::HybridSender;
-        use crate::scanner::raw_socket_sender::RawSocketSender;
-
-        let xdp_sender: Box<dyn AfXdpSend> = match HybridSender::new(&iface, 0, src_ip) {
-            Ok(sender) => {
-                // Register the AF_XDP socket in the BPF xsk_map
-                let bpf_guard = bpf.lock().await;
-                if let Err(e) = bpf_guard.register_xsk_fd(sender.fd()) {
-                    tracing::warn!(error = %e, "xsk_map registration failed — responses may not be captured");
-                }
-                drop(bpf_guard);
-                Box::new(sender)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "hybrid sender unavailable — falling back to raw socket TX"
-                );
-                Box::new(
-                    RawSocketSender::new(src_ip, Some(&iface))
-                        .map_err(|e| format!("raw socket fallback failed: {e}"))?,
-                )
-            }
-        };
-
-        let mut scanner = SynScanner::new_with_sender(stealth, xdp_sender);
-        let collector = DiscoveryCollector::new(timeout);
-        let target_ip_u32 = u32::from_be_bytes(target_ip.octets());
-
-        let mut all_ports: Vec<ScannedPort> = Vec::with_capacity(ports.len());
-
-        // Send probe batches, draining AF_XDP RX ring between batches to
-        // prevent overflow for fast targets (RTT < 1ms)
-        let mut all_probes = Vec::new();
-        for batch in ports.chunks(batch_size) {
-            let result = scanner
-                .send_syn_batch(target_ip, batch)
-                .map_err(|e| format!("scan error: {e}"))?;
-            all_probes.extend(result.probed_ports);
-
-            // Drain AF_XDP RX ring between batches to prevent overflow
-            scanner.poll_rx(0);
-        }
-
-        // Poll BPF map for early return — check every 50ms if all probes
-        // have received responses. Fall back to full timeout as the deadline.
-        {
-            let poll_interval = Duration::from_millis(5);
-            let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
-            let total_probes = all_probes.len();
-
-            loop {
-                let now = tokio::time::Instant::now();
-                if now >= deadline {
-                    break;
-                }
-                let remaining = deadline - now;
-                tokio::time::sleep(poll_interval.min(remaining)).await;
-
-                let bpf_guard = bpf.lock().await;
-                let responded = all_probes
-                    .iter()
-                    .filter(|probe| {
-                        bpf_guard
-                            .read_timing_v2(target_ip_u32, probe.dst_port, probe.src_port)
-                            .is_some()
-                    })
-                    .count();
-                drop(bpf_guard);
-
-                if responded == total_probes {
-                    break;
-                }
-            }
-        }
-
-        // Collect all results in one pass
-        let bpf_guard = bpf.lock().await;
-        let discovery = collector.collect(&all_probes, &*bpf_guard, target_ip_u32);
-        drop(bpf_guard);
-
-        for port in discovery.ports {
-            all_ports.push(ScannedPort {
-                port: port.port,
-                state: port.state,
-                timing_ns: port.timing_ns,
-                response_ttl: port.response_ttl,
-                response_win: port.response_win,
-            });
-        }
-
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        Ok(ScanResult {
-            request_id,
-            target_ip,
-            target_hostname,
-            ports: all_ports,
-            duration_ms,
-            backend: backend_str,
-            scanned_at: Utc::now(),
-            error: None,
-        })
+    let result = engine.discover(&request).await;
+    if let Some(ref e) = result.error {
+        Err(e.clone())
+    } else {
+        Ok(result)
     }
 }
+
+use crate::ScanResult;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Timing subcommand
@@ -328,8 +181,7 @@ pub async fn run_scan(
 
 /// Run RTT timing for a single port and print results.
 ///
-/// Uses the AF_XDP + BPF raw SYN probe path — same kernel-bypass pipeline as
-/// `run_scan()`. Requires Linux with CAP_BPF + CAP_NET_ADMIN.
+/// Creates an Engine and delegates to `engine.collect_timing()`.
 pub async fn run_time(
     target: &str,
     port: u16,
@@ -338,101 +190,54 @@ pub async fn run_time(
     output: OutputFmt,
     interface: Option<String>,
 ) -> Result<(), String> {
-    let (target_ip, hostname) = resolve_target(target)?;
+    let (_, hostname) = resolve_target(target)?;
 
-    // BPF init is required — no userspace fallback
-    let (_backend, bpf_collector) = crate::timing::detect_timing_backend(&interface)
-        .map_err(|e| format!("BPF initialisation failed: {e}"))?;
+    let engine = Engine::new(ScanEngineConfig {
+        interface,
+        passthrough: false,
+    });
 
-    let iface = bpf_collector.interface().to_string();
-    let bpf = Arc::new(Mutex::new(bpf_collector));
+    let request = TimingRequest {
+        request_id: Uuid::new_v4(),
+        scan_id: None,
+        target_host: target.to_string(),
+        target_port: port,
+        sample_count: samples,
+        timeout_ms,
+        banner_timeout_ms: None,
+    };
 
-    // Detect source IP — prefer the interface's own IP (see scan_ports comment).
-    let src_ip = interface_source_ip(&iface)
-        .or_else(|_| detect_source_ip(target_ip))
-        .map_err(|e| format!("source IP detection failed: {e}"))?;
+    let result = engine.collect_timing(&request).await;
 
-    // Aggressive pacing (5ms delay, 10% jitter) — stealth is irrelevant for RTT measurement,
-    // we want fast, low-variance samples
-    let pacing = PacingProfile::Aggressive;
-    let mut stealth = StealthProfile::linux_6x_default();
-    pacing.apply_to(&mut stealth);
+    match output {
+        OutputFmt::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).unwrap_or_default()
+            );
+        }
+        OutputFmt::Pretty => {
+            let target_ip_str = resolve_target(target)
+                .map(|(ip, _)| ip.to_string())
+                .unwrap_or_else(|_| target.to_string());
 
-    // Create HybridSender → register xsk_fd → SynScanner (same pattern as run_scan)
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (iface, bpf, src_ip, stealth);
-        return Err("RTT timing requires Linux with CAP_BPF and CAP_NET_ADMIN".to_string());
-    }
+            let host_label = hostname
+                .map(|h| format!("{h} ({target_ip_str})"))
+                .unwrap_or(target_ip_str);
 
-    #[cfg(target_os = "linux")]
-    {
-        use crate::scanner::afxdp_sender::AfXdpSend;
-        use crate::scanner::hybrid_sender::HybridSender;
-        use crate::scanner::raw_socket_sender::RawSocketSender;
-        use crate::timing::collect_timing_samples_raw;
-
-        let xdp_sender: Box<dyn AfXdpSend> = match HybridSender::new(&iface, 0, src_ip) {
-            Ok(sender) => {
-                let bpf_guard = bpf.lock().await;
-                if let Err(e) = bpf_guard.register_xsk_fd(sender.fd()) {
-                    tracing::warn!(error = %e, "xsk_map registration failed — responses may not be captured");
-                }
-                drop(bpf_guard);
-                Box::new(sender)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "hybrid sender unavailable — falling back to raw socket TX"
-                );
-                Box::new(
-                    RawSocketSender::new(src_ip, Some(&iface))
-                        .map_err(|e| format!("raw socket fallback failed: {e}"))?,
-                )
-            }
-        };
-
-        let scanner = Arc::new(Mutex::new(SynScanner::new_with_sender(stealth, xdp_sender)));
-
-        let request = TimingRequest {
-            request_id: Uuid::new_v4(),
-            scan_id: None,
-            target_host: target.to_string(),
-            target_port: port,
-            sample_count: samples,
-            timeout_ms,
-            banner_timeout_ms: None,
-        };
-
-        let result = collect_timing_samples_raw(&request, bpf, scanner).await;
-
-        match output {
-            OutputFmt::Json => {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&result).unwrap_or_default()
-                );
-            }
-            OutputFmt::Pretty => {
-                let host_label = hostname
-                    .map(|h| format!("{h} ({target_ip})"))
-                    .unwrap_or_else(|| target_ip.to_string());
-
-                println!("Timing report for {host_label} port {port}/tcp");
-                if let Some(err) = &result.error {
-                    println!("Error: {err}");
-                } else {
-                    println!("Backend:   {}", result.precision_class);
-                    println!("Samples:   {}", result.samples.len());
-                    println!("Mean RTT:  {:.2}µs", result.stats.mean);
-                    println!("Std Dev:   {:.2}µs", result.stats.std);
-                    println!("P50:       {:.2}µs", result.stats.p50);
-                    println!("P90:       {:.2}µs", result.stats.p90);
-                }
+            println!("Timing report for {host_label} port {port}/tcp");
+            if let Some(err) = &result.error {
+                println!("Error: {err}");
+            } else {
+                println!("Backend:   {}", result.precision_class);
+                println!("Samples:   {}", result.samples.len());
+                println!("Mean RTT:  {:.2}µs", result.stats.mean);
+                println!("Std Dev:   {:.2}µs", result.stats.std);
+                println!("P50:       {:.2}µs", result.stats.p50);
+                println!("P90:       {:.2}µs", result.stats.p90);
             }
         }
-
-        Ok(())
     }
+
+    Ok(())
 }

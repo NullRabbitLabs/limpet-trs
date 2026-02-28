@@ -502,6 +502,14 @@ impl SynScanner {
     pub fn profile(&self) -> &StealthProfile {
         &self.profile
     }
+
+    /// Replace the stealth profile.
+    ///
+    /// Used by `Engine::discover()` to apply per-request pacing while
+    /// reusing the same AF_XDP sender.
+    pub fn set_profile(&mut self, profile: StealthProfile) {
+        self.profile = profile;
+    }
 }
 
 // =============================================================================
