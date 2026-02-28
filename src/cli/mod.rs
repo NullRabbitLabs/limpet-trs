@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::scanner::collector::DiscoveryCollector;
 use crate::scanner::stealth::{PacingProfile, StealthProfile};
-use crate::scanner::syn_sender::{detect_source_ip, SynScanner};
+use crate::scanner::syn_sender::{detect_source_ip, interface_source_ip, SynScanner};
 use crate::{PortSpec, ScanResult, ScannedPort, TimingRequest};
 
 pub use output::{format_json, format_pretty};
@@ -191,9 +191,11 @@ pub async fn run_scan(
     let iface = bpf_collector.interface().to_string();
     let bpf = Arc::new(Mutex::new(bpf_collector));
 
-    // Detect source IP
-    let src_ip =
-        detect_source_ip(target_ip).map_err(|e| format!("source IP detection failed: {e}"))?;
+    // Detect source IP — prefer the interface's own IP so that AF_XDP raw
+    // frames use the correct source address even when a VPN/WireGuard tunnel
+    // would otherwise route traffic through a different interface.
+    let src_ip = interface_source_ip(&iface).or_else(|_| detect_source_ip(target_ip))
+        .map_err(|e| format!("source IP detection failed: {e}"))?;
 
     // Build stealth profile with pacing applied
     let mut stealth = StealthProfile::linux_6x_default();
@@ -232,7 +234,7 @@ pub async fn run_scan(
                     "hybrid sender unavailable — falling back to raw socket TX"
                 );
                 Box::new(
-                    RawSocketSender::new(src_ip)
+                    RawSocketSender::new(src_ip, Some(&iface))
                         .map_err(|e| format!("raw socket fallback failed: {e}"))?,
                 )
             }
@@ -345,9 +347,9 @@ pub async fn run_time(
     let iface = bpf_collector.interface().to_string();
     let bpf = Arc::new(Mutex::new(bpf_collector));
 
-    // Detect source IP
-    let src_ip =
-        detect_source_ip(target_ip).map_err(|e| format!("source IP detection failed: {e}"))?;
+    // Detect source IP — prefer the interface's own IP (see scan_ports comment).
+    let src_ip = interface_source_ip(&iface).or_else(|_| detect_source_ip(target_ip))
+        .map_err(|e| format!("source IP detection failed: {e}"))?;
 
     // Aggressive pacing (5ms delay, 10% jitter) — stealth is irrelevant for RTT measurement,
     // we want fast, low-variance samples
@@ -384,7 +386,7 @@ pub async fn run_time(
                     "hybrid sender unavailable — falling back to raw socket TX"
                 );
                 Box::new(
-                    RawSocketSender::new(src_ip)
+                    RawSocketSender::new(src_ip, Some(&iface))
                         .map_err(|e| format!("raw socket fallback failed: {e}"))?,
                 )
             }

@@ -328,6 +328,12 @@ Timing samples from Limpet can be analysed by [Minerva-HDN](https://github.com/N
 
 ---
 
+## Legal Notice
+
+This tool is provided for authorised security testing, network administration, and research purposes only. You must have explicit permission from the network owner before scanning any target. Unauthorised port scanning may violate computer misuse laws in your jurisdiction (e.g. the Computer Misuse Act 1990 in the UK, the CFAA in the US). The authors accept no liability for misuse.
+
+---
+
 ## License
 
 MIT

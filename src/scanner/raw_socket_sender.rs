@@ -47,11 +47,13 @@ impl RawSocketSender {
     /// Create a raw socket sender for the given source IP.
     ///
     /// Opens `SOCK_RAW / IPPROTO_RAW`. Requires `CAP_NET_RAW`.
+    /// When `ifname` is provided, binds the socket to that interface via
+    /// `SO_BINDTODEVICE`, forcing packets through it regardless of VPN/WireGuard
+    /// policy routing.
     ///
     /// # Errors
-    /// Returns `ScanError::RawSocket` if `socket()` fails (typically missing
-    /// `CAP_NET_RAW` or kernel restriction).
-    pub fn new(src_ip: Ipv4Addr) -> Result<Self, ScanError> {
+    /// Returns `ScanError::RawSocket` if `socket()` or `SO_BINDTODEVICE` fails.
+    pub fn new(src_ip: Ipv4Addr, ifname: Option<&str>) -> Result<Self, ScanError> {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_RAW) };
         if fd < 0 {
             return Err(ScanError::RawSocket(format!(
@@ -59,6 +61,28 @@ impl RawSocketSender {
                 std::io::Error::last_os_error()
             )));
         }
+
+        // Bind to specific interface so packets bypass VPN/WireGuard routing
+        if let Some(name) = ifname {
+            let ret = unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_BINDTODEVICE,
+                    name.as_ptr() as *const libc::c_void,
+                    name.len() as libc::socklen_t,
+                )
+            };
+            if ret < 0 {
+                unsafe { libc::close(fd) };
+                return Err(ScanError::RawSocket(format!(
+                    "SO_BINDTODEVICE({}) failed: {}",
+                    name,
+                    std::io::Error::last_os_error()
+                )));
+            }
+        }
+
         Ok(Self { fd, src_ip })
     }
 }
@@ -228,7 +252,7 @@ mod tests {
     #[test]
     #[ignore] // Requires CAP_NET_RAW — run with: sudo cargo test --lib -- --ignored
     fn test_raw_socket_sender_opens_socket() {
-        let result = RawSocketSender::new(Ipv4Addr::new(127, 0, 0, 1));
+        let result = RawSocketSender::new(Ipv4Addr::new(127, 0, 0, 1), None);
         assert!(
             result.is_ok(),
             "raw socket creation should succeed with CAP_NET_RAW: {:?}",

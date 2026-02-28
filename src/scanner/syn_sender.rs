@@ -67,6 +67,31 @@ pub fn detect_source_ip(target: Ipv4Addr) -> Result<Ipv4Addr, ScanError> {
     }
 }
 
+/// Get the IPv4 address assigned to a specific network interface.
+///
+/// When AF_XDP sends raw frames on a specific interface, the source IP must
+/// match that interface — not whatever the OS routing table selects (which
+/// may point to a VPN/WireGuard tunnel on a different interface).
+pub fn interface_source_ip(ifname: &str) -> Result<Ipv4Addr, ScanError> {
+    let addrs = nix::ifaddrs::getifaddrs()
+        .map_err(|e| ScanError::RawSocket(format!("getifaddrs: {e}")))?;
+
+    for addr in addrs {
+        if addr.interface_name != ifname {
+            continue;
+        }
+        if let Some(sockaddr) = addr.address {
+            if let Some(sin) = sockaddr.as_sockaddr_in() {
+                return Ok(sin.ip());
+            }
+        }
+    }
+
+    Err(ScanError::RawSocket(format!(
+        "no IPv4 address found on interface '{ifname}'"
+    )))
+}
+
 /// Result of sending a batch of SYN probes.
 #[derive(Debug)]
 pub struct SynBatchResult {

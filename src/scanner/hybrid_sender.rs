@@ -56,7 +56,7 @@ impl HybridSender {
     /// Returns `ScanError` if either AF_XDP socket or raw socket creation fails.
     pub fn new(ifname: &str, queue_id: u32, src_ip: Ipv4Addr) -> Result<Self, ScanError> {
         let xdp_rx = AfXdpSender::new(ifname, queue_id, src_ip)?;
-        let raw_tx = RawSocketSender::new(src_ip)?;
+        let raw_tx = RawSocketSender::new(src_ip, Some(ifname))?;
         Ok(Self { raw_tx, xdp_rx })
     }
 

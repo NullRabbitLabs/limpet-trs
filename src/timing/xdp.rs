@@ -10,7 +10,7 @@ use std::mem::MaybeUninit;
 use std::os::fd::AsFd;
 
 use libbpf_rs::skel::{OpenSkel, SkelBuilder};
-use libbpf_rs::{MapCore, OpenObject, TcHook, TC_EGRESS};
+use libbpf_rs::{MapCore, OpenObject, TcHook, Xdp, XdpFlags, TC_EGRESS};
 
 use crate::{PortState, TimingBackend};
 
@@ -87,6 +87,29 @@ impl BpfTimingCollector {
             .load()
             .map_err(|e| BpfTimingError::Load(e.to_string()))?;
 
+        // Clean up stale XDP program from a previous crash/hard-kill.
+        // bpf_program__attach_xdp creates a link-based attachment (auto-cleanup on FD close),
+        // but netlink-based XDP (ip link set xdp) persists after process exit.
+        let xdp_handle = Xdp::new(skel.progs.xdp_timing_ingress.as_fd());
+        match xdp_handle.query_id(ifindex as i32, XdpFlags::NONE) {
+            Ok(old_id) if old_id > 0 => {
+                match xdp_handle.detach(ifindex as i32, XdpFlags::NONE) {
+                    Ok(()) => tracing::info!(
+                        interface = %interface,
+                        old_prog_id = old_id,
+                        "Detached stale XDP program"
+                    ),
+                    Err(e) => tracing::warn!(
+                        interface = %interface,
+                        old_prog_id = old_id,
+                        error = %e,
+                        "Failed to detach stale XDP program"
+                    ),
+                }
+            }
+            _ => {} // No existing XDP — expected on first run
+        }
+
         // Attach XDP program to interface
         let xdp_link = skel
             .progs
@@ -148,13 +171,19 @@ impl BpfTimingCollector {
             Ok(()) => tracing::debug!(interface = %interface, "Destroyed existing clsact qdisc (stale hooks cleaned)"),
             Err(e) => {
                 let msg = e.to_string();
-                // ENOENT is expected on first run (no existing qdisc)
-                if !msg.contains("ENOENT") && !msg.contains("No such file") {
-                    tracing::warn!(
-                        interface = %interface,
-                        error = %e,
-                        "Failed to destroy existing TC qdisc — another BPF program may be attached"
-                    );
+                // ENOENT / EINVAL are expected on first run (no existing qdisc).
+                // "Exclusivity flag" means a stale BPF program holds the slot — fatal.
+                if msg.contains("Exclusivity") {
+                    return Err(BpfTimingError::AttachTc {
+                        interface: interface.to_string(),
+                        reason: format!(
+                            "cannot remove existing TC qdisc ({}). \
+                             A stale BPF program may be attached — try: \
+                             sudo ip link set dev {} xdpgeneric off && \
+                             sudo tc qdisc del dev {} clsact",
+                            e, interface, interface
+                        ),
+                    });
                 }
             }
         }
