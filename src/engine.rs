@@ -76,59 +76,85 @@ pub fn resolve_target(target: &str) -> Result<(Ipv4Addr, Option<String>), String
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl Engine {
-    /// Create a new scanning engine.
+    /// Create a new BPF-backed scanning engine.
     ///
-    /// Attempts to initialize BPF timing backend. Falls back to `ConnectOnly`
-    /// when BPF is unavailable (non-Linux, missing CAP_BPF, etc.).
+    /// On Linux, initializes BPF timing backend and **fails hard** if BPF is
+    /// unavailable (missing CAP_BPF, stale XDP programs, etc.). The connect-scan
+    /// fallback is intentionally removed — it produces incorrect results for
+    /// CDN-fronted hosts where Cloudflare accepts TCP handshakes on filtered ports.
+    ///
+    /// On non-Linux, returns `ConnectOnly` (for development only).
+    ///
+    /// Use [`Engine::new_connect_only`] when you explicitly want TCP connect
+    /// scanning (tests, non-Linux dev environments).
+    #[cfg(not(target_os = "linux"))]
     pub fn new(config: ScanEngineConfig) -> Self {
+        let iface = config.interface.unwrap_or_else(|| "lo0".to_string());
+        tracing::warn!("BPF unavailable on non-Linux — connect-scan fallback active");
+        Engine::ConnectOnly { interface: iface }
+    }
+
+    /// Create a new BPF-backed scanning engine.
+    ///
+    /// On Linux, initializes BPF timing backend and **fails hard** if BPF is
+    /// unavailable (missing CAP_BPF, stale XDP programs, etc.). The connect-scan
+    /// fallback is intentionally removed — it produces incorrect results for
+    /// CDN-fronted hosts where Cloudflare accepts TCP handshakes on filtered ports.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with a diagnostic message if:
+    /// - BPF timing backend cannot be initialized (permissions, stale programs)
+    /// - SYN scanner creation fails (no IPv4 on interface, raw socket error)
+    #[cfg(target_os = "linux")]
+    pub fn new(config: ScanEngineConfig) -> Result<Self, String> {
         if config.passthrough {
             tracing::info!("passthrough mode: using raw socket TX, no AF_XDP redirect");
         }
 
-        #[cfg(not(target_os = "linux"))]
-        {
-            let iface = config.interface.unwrap_or_else(|| "lo0".to_string());
-            tracing::warn!("BPF unavailable on non-Linux — connect-scan fallback active");
-            return Engine::ConnectOnly { interface: iface };
-        }
+        let (backend, collector) = crate::timing::detect_timing_backend(&config.interface)
+            .map_err(|e| {
+                format!(
+                    "BPF timing backend unavailable: {e}. \
+                     Limpet requires BPF (CAP_BPF + CAP_NET_ADMIN) for accurate SYN scanning. \
+                     If stale programs are attached, try: \
+                     sudo ip link set dev <iface> xdpgeneric off && \
+                     sudo tc qdisc del dev <iface> clsact"
+                )
+            })?;
 
-        #[cfg(target_os = "linux")]
-        {
-            match crate::timing::detect_timing_backend(&config.interface) {
-                Ok((backend, collector)) => {
-                    let iface = collector.interface().to_string();
-                    tracing::info!(
-                        backend = %backend,
-                        interface = %iface,
-                        passthrough = config.passthrough,
-                        "BPF timing backend initialised"
-                    );
-                    let bpf = Arc::new(Mutex::new(collector));
-                    match Self::create_scanner(&iface, &bpf, config.passthrough) {
-                        Some(scanner) => Engine::Bpf(ScanEngine {
-                            collector: bpf,
-                            scanner,
-                            interface: iface,
-                            backend,
-                            passthrough: config.passthrough,
-                        }),
-                        None => {
-                            tracing::warn!(
-                                "scanner creation failed — connect-scan fallback active"
-                            );
-                            Engine::ConnectOnly { interface: iface }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "BPF timing backend unavailable — connect-scan fallback active"
-                    );
-                    let iface = config.interface.unwrap_or_else(|| "eth0".to_string());
-                    Engine::ConnectOnly { interface: iface }
-                }
-            }
+        let iface = collector.interface().to_string();
+        tracing::info!(
+            backend = %backend,
+            interface = %iface,
+            passthrough = config.passthrough,
+            "BPF timing backend initialised"
+        );
+
+        let bpf = Arc::new(Mutex::new(collector));
+        let scanner = Self::create_scanner(&iface, &bpf, config.passthrough).ok_or_else(|| {
+            format!(
+                "SYN scanner creation failed on interface '{iface}'. \
+                 Check that the interface has an IPv4 address and raw socket permissions."
+            )
+        })?;
+
+        Ok(Engine::Bpf(ScanEngine {
+            collector: bpf,
+            scanner,
+            interface: iface,
+            backend,
+            passthrough: config.passthrough,
+        }))
+    }
+
+    /// Create a connect-only engine explicitly.
+    ///
+    /// For tests and non-Linux development only. Does **not** use BPF — results
+    /// will be inaccurate for CDN-fronted hosts.
+    pub fn new_connect_only(interface: &str) -> Self {
+        Engine::ConnectOnly {
+            interface: interface.to_string(),
         }
     }
 
@@ -689,22 +715,57 @@ mod tests {
         assert_eq!(result.ports.len(), 3, "max_ports=3 should truncate to 3 ports");
     }
 
-    // ── Engine::new fallback ───────────────────────────────────────────────
+    // ── Engine::new — fail hard on BPF failure ──────────────────────────
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn test_engine_new_returns_some_variant() {
-        // On non-Linux or unprivileged, returns ConnectOnly.
-        // On Linux with BPF, returns Bpf.
+    fn test_engine_new_returns_result() {
+        // On unprivileged Linux, Engine::new() returns Err (BPF unavailable).
+        // On privileged Linux with BPF, returns Ok(Bpf).
         // Either way, it must not panic.
+        let result = Engine::new(ScanEngineConfig {
+            interface: None,
+            passthrough: true,
+        });
+        match result {
+            Ok(engine) => {
+                let backend = engine.backend_str();
+                assert!(
+                    backend == "xdp" || backend == "xdp-hybrid",
+                    "BPF engine must be xdp or xdp-hybrid, got '{backend}'"
+                );
+            }
+            Err(e) => {
+                assert!(
+                    !e.is_empty(),
+                    "error message must not be empty"
+                );
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_engine_new_returns_connect_only_on_non_linux() {
         let engine = Engine::new(ScanEngineConfig {
             interface: None,
             passthrough: true,
         });
-        // Just verify it doesn't panic and has a valid backend
-        let backend = engine.backend_str();
-        assert!(
-            backend == "connect" || backend == "xdp" || backend == "xdp-hybrid",
-            "backend must be one of connect/xdp/xdp-hybrid, got '{backend}'"
-        );
+        assert_eq!(engine.backend_str(), "connect");
+    }
+
+    // ── Engine::new_connect_only ──────────────────────────────────────────
+
+    #[test]
+    fn test_engine_new_connect_only_returns_connect_backend() {
+        let engine = Engine::new_connect_only("eth0");
+        assert_eq!(engine.backend_str(), "connect");
+        assert_eq!(engine.interface(), "eth0");
+    }
+
+    #[test]
+    fn test_engine_new_connect_only_custom_interface() {
+        let engine = Engine::new_connect_only("wlan0");
+        assert_eq!(engine.interface(), "wlan0");
     }
 }

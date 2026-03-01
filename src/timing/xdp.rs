@@ -98,12 +98,15 @@ impl BpfTimingCollector {
                     old_prog_id = old_id,
                     "Detached stale XDP program"
                 ),
-                Err(e) => tracing::warn!(
-                    interface = %interface,
-                    old_prog_id = old_id,
-                    error = %e,
-                    "Failed to detach stale XDP program"
-                ),
+                Err(e) => {
+                    tracing::warn!(
+                        interface = %interface,
+                        old_prog_id = old_id,
+                        error = %e,
+                        "libbpf XDP detach failed, trying system command fallback"
+                    );
+                    cleanup_stale_xdp(interface);
+                }
             },
             _ => {} // No existing XDP — expected on first run
         }
@@ -174,16 +177,23 @@ impl BpfTimingCollector {
                 // ENOENT / EINVAL are expected on first run (no existing qdisc).
                 // "Exclusivity flag" means a stale BPF program holds the slot — fatal.
                 if msg.contains("Exclusivity") {
-                    return Err(BpfTimingError::AttachTc {
-                        interface: interface.to_string(),
-                        reason: format!(
-                            "cannot remove existing TC qdisc ({}). \
-                             A stale BPF program may be attached — try: \
-                             sudo ip link set dev {} xdpgeneric off && \
-                             sudo tc qdisc del dev {} clsact",
-                            e, interface, interface
-                        ),
-                    });
+                    tracing::warn!(
+                        interface = %interface,
+                        error = %e,
+                        "libbpf TC destroy failed with Exclusivity, trying system command fallback"
+                    );
+                    if !cleanup_stale_tc(interface) {
+                        return Err(BpfTimingError::AttachTc {
+                            interface: interface.to_string(),
+                            reason: format!(
+                                "cannot remove existing TC qdisc ({}). \
+                                 A stale BPF program may be attached — try: \
+                                 sudo ip link set dev {} xdpgeneric off && \
+                                 sudo tc qdisc del dev {} clsact",
+                                e, interface, interface
+                            ),
+                        });
+                    }
                 }
             }
         }
@@ -691,6 +701,70 @@ pub fn check_bpf_source_safety(source: &str) -> Vec<String> {
     }
 
     violations
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stale BPF cleanup helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build the command to remove a stale XDP program via system `ip` command.
+fn xdp_cleanup_command(interface: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args(["link", "set", "dev", interface, "xdpgeneric", "off"]);
+    cmd
+}
+
+/// Build the command to remove a stale TC clsact qdisc via system `tc` command.
+fn tc_cleanup_command(interface: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("tc");
+    cmd.args(["qdisc", "del", "dev", interface, "clsact"]);
+    cmd
+}
+
+/// Attempt to remove stale XDP program using system `ip` command.
+/// Returns true if the command succeeded.
+fn cleanup_stale_xdp(interface: &str) -> bool {
+    match xdp_cleanup_command(interface).output() {
+        Ok(output) if output.status.success() => {
+            tracing::info!(interface = %interface, "Removed stale XDP via system command");
+            true
+        }
+        Ok(output) => {
+            tracing::warn!(
+                interface = %interface,
+                stderr = %String::from_utf8_lossy(&output.stderr),
+                "System XDP cleanup failed"
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!(interface = %interface, error = %e, "Failed to run ip command");
+            false
+        }
+    }
+}
+
+/// Attempt to remove stale TC clsact qdisc using system `tc` command.
+/// Returns true if the command succeeded.
+fn cleanup_stale_tc(interface: &str) -> bool {
+    match tc_cleanup_command(interface).output() {
+        Ok(output) if output.status.success() => {
+            tracing::info!(interface = %interface, "Removed stale TC qdisc via system command");
+            true
+        }
+        Ok(output) => {
+            tracing::warn!(
+                interface = %interface,
+                stderr = %String::from_utf8_lossy(&output.stderr),
+                "System TC cleanup failed"
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!(interface = %interface, error = %e, "Failed to run tc command");
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1517,6 +1591,40 @@ mod tests {
         );
     }
 
+    // ===========================================
+    // Stale BPF cleanup command builder tests
+    // ===========================================
+
+    #[test]
+    fn test_xdp_cleanup_command_produces_correct_args() {
+        let cmd = xdp_cleanup_command("eth0");
+        assert_eq!(cmd.get_program().to_str().unwrap(), "ip");
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(args, &["link", "set", "dev", "eth0", "xdpgeneric", "off"]);
+    }
+
+    #[test]
+    fn test_xdp_cleanup_command_custom_interface() {
+        let cmd = xdp_cleanup_command("ens5");
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(args, &["link", "set", "dev", "ens5", "xdpgeneric", "off"]);
+    }
+
+    #[test]
+    fn test_tc_cleanup_command_produces_correct_args() {
+        let cmd = tc_cleanup_command("eth0");
+        assert_eq!(cmd.get_program().to_str().unwrap(), "tc");
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(args, &["qdisc", "del", "dev", "eth0", "clsact"]);
+    }
+
+    #[test]
+    fn test_tc_cleanup_command_custom_interface() {
+        let cmd = tc_cleanup_command("wlan0");
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(args, &["qdisc", "del", "dev", "wlan0", "clsact"]);
+    }
+
     // Integration tests - require root/CAP_BPF + CAP_NET_ADMIN
     #[test]
     #[ignore]
@@ -1546,6 +1654,14 @@ mod tests {
         //
         // Requires: bare-metal Linux with eth0, CAP_BPF, CAP_NET_ADMIN.
         // Run with: sudo cargo test --lib -- --ignored test_tc_hook_no_leak_on_restart
+        todo!("Integration test — run on bare-metal Linux with CAP_BPF + CAP_NET_ADMIN")
+    }
+
+    #[test]
+    #[ignore]
+    fn test_stale_xdp_cleanup_then_reattach() {
+        // Attach XDP, kill process, re-attach — cleanup_stale_xdp should unblock.
+        // Requires: sudo cargo test --lib -- --ignored test_stale_xdp_cleanup_then_reattach
         todo!("Integration test — run on bare-metal Linux with CAP_BPF + CAP_NET_ADMIN")
     }
 }

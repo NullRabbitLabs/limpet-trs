@@ -150,10 +150,7 @@ pub async fn run_scan(
     timeout_ms: u32,
     interface: Option<String>,
 ) -> Result<ScanResult, String> {
-    let engine = Engine::new(ScanEngineConfig {
-        interface: interface.clone(),
-        passthrough: false,
-    });
+    let engine = create_engine(interface.clone())?;
 
     let request = ScanRequest {
         request_id: Uuid::new_v4(),
@@ -175,6 +172,26 @@ pub async fn run_scan(
 
 use crate::ScanResult;
 
+/// Create an Engine, handling the platform-specific return type.
+///
+/// On Linux, `Engine::new()` returns `Result` (fails hard if BPF unavailable).
+/// On non-Linux, returns the engine directly (connect-only for dev).
+#[cfg(target_os = "linux")]
+fn create_engine(interface: Option<String>) -> Result<Engine, String> {
+    Engine::new(ScanEngineConfig {
+        interface,
+        passthrough: false,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn create_engine(interface: Option<String>) -> Result<Engine, String> {
+    Ok(Engine::new(ScanEngineConfig {
+        interface,
+        passthrough: false,
+    }))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Timing subcommand
 // ─────────────────────────────────────────────────────────────────────────────
@@ -192,10 +209,7 @@ pub async fn run_time(
 ) -> Result<(), String> {
     let (_, hostname) = resolve_target(target)?;
 
-    let engine = Engine::new(ScanEngineConfig {
-        interface,
-        passthrough: false,
-    });
+    let engine = create_engine(interface)?;
 
     let request = TimingRequest {
         request_id: Uuid::new_v4(),
