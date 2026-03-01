@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
 use uuid::Uuid;
 
+/// Crate version, re-exported for downstream consumers (e.g. limpet-timing).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // Re-export key backend types for library users.
 pub use engine::{Engine, ScanEngineConfig};
 pub use scanner::stealth::{PacingProfile, StealthProfile};
