@@ -512,7 +512,10 @@ mod tests {
     fn test_resolve_target_ipv4_literal() {
         let (ip, hostname) = resolve_target("192.168.1.1").unwrap();
         assert_eq!(ip, Ipv4Addr::new(192, 168, 1, 1));
-        assert!(hostname.is_none(), "IPv4 literal should not produce hostname");
+        assert!(
+            hostname.is_none(),
+            "IPv4 literal should not produce hostname"
+        );
     }
 
     #[test]
@@ -566,7 +569,11 @@ mod tests {
         };
         let result = engine.collect_timing(&request).await;
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("BPF timing unavailable"));
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("BPF timing unavailable"));
         assert_eq!(result.precision_class, "error");
         assert!(result.samples.is_empty());
     }
@@ -631,14 +638,7 @@ mod tests {
     async fn test_connect_scan_returns_scan_result() {
         let request_id = Uuid::new_v4();
         // Scan a single port on localhost — likely closed or refused
-        let result = run_connect_scan(
-            Ipv4Addr::LOCALHOST,
-            &[19999],
-            500,
-            None,
-            request_id,
-        )
-        .await;
+        let result = run_connect_scan(Ipv4Addr::LOCALHOST, &[19999], 500, None, request_id).await;
         assert_eq!(result.request_id, request_id);
         assert_eq!(result.target_ip, Ipv4Addr::LOCALHOST);
         assert_eq!(result.backend, "connect");
@@ -693,7 +693,11 @@ mod tests {
         };
         let result = engine.discover(&request).await;
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("DNS resolution failed"));
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("DNS resolution failed"));
         assert!(result.ports.is_empty());
     }
 
@@ -705,14 +709,21 @@ mod tests {
         let request = ScanRequest {
             request_id: Uuid::new_v4(),
             target: "127.0.0.1".to_string(),
-            ports: PortSpec::Range { start: 19990, end: 19999 },
+            ports: PortSpec::Range {
+                start: 19990,
+                end: 19999,
+            },
             pacing: PacingProfile::Aggressive,
             timeout_ms: 500,
             interface: None,
             max_ports: Some(3),
         };
         let result = engine.discover(&request).await;
-        assert_eq!(result.ports.len(), 3, "max_ports=3 should truncate to 3 ports");
+        assert_eq!(
+            result.ports.len(),
+            3,
+            "max_ports=3 should truncate to 3 ports"
+        );
     }
 
     // ── Engine::new — fail hard on BPF failure ──────────────────────────
@@ -736,10 +747,7 @@ mod tests {
                 );
             }
             Err(e) => {
-                assert!(
-                    !e.is_empty(),
-                    "error message must not be empty"
-                );
+                assert!(!e.is_empty(), "error message must not be empty");
             }
         }
     }
