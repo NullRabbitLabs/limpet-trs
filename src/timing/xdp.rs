@@ -44,6 +44,9 @@ pub enum BpfTimingError {
 
     #[error("failed to register AF_XDP socket in xsk_map: {0}")]
     XskMapError(String),
+
+    #[error("post-attach verification failed: {0}")]
+    VerifyFailed(String),
 }
 
 /// BPF-based timing collector.
@@ -142,6 +145,12 @@ impl BpfTimingCollector {
                 BpfTimingError::MapError(format!("BPF map write verification failed: {e}"))
             })?;
         skel.maps.timing_map.delete(&sentinel_key).ok(); // cleanup, ignore if already gone
+
+        // Verify both programs are actually on the wire by querying the kernel.
+        // libbpf can report success even when attachment silently fails (e.g.
+        // "Exclusivity flag on, cannot modify" swallowed during XDP replace).
+        verify_xdp_attached(interface)?;
+        verify_tc_attached(interface)?;
 
         Ok(Self {
             skel,
@@ -767,6 +776,81 @@ fn cleanup_stale_tc(interface: &str) -> bool {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Post-attach kernel verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Returns `true` if `ip link show dev <iface>` output indicates an XDP program
+/// is attached to the interface.
+fn xdp_output_has_program(stdout: &str) -> bool {
+    stdout.contains("xdp") || stdout.contains("prog/xdp")
+}
+
+/// Returns `true` if `tc filter show dev <iface> egress` output contains a BPF
+/// filter, indicating the TC egress timestamping program is attached.
+fn tc_output_has_bpf(stdout: &str) -> bool {
+    stdout.lines().any(|line| line.contains("bpf"))
+}
+
+/// Verify XDP ingress is actually attached by querying the kernel.
+fn verify_xdp_attached(interface: &str) -> Result<(), BpfTimingError> {
+    let output = std::process::Command::new("ip")
+        .args(["link", "show", "dev", interface])
+        .output()
+        .map_err(|e| {
+            BpfTimingError::VerifyFailed(format!("cannot run `ip link show dev {interface}`: {e}"))
+        })?;
+
+    if !output.status.success() {
+        return Err(BpfTimingError::VerifyFailed(format!(
+            "`ip link show dev {interface}` exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !xdp_output_has_program(&stdout) {
+        return Err(BpfTimingError::VerifyFailed(format!(
+            "no XDP program attached to {interface} after Engine::new(). \
+             BPF attachment silently failed.\nip link output:\n{stdout}"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Verify TC egress is attached by querying the kernel.
+fn verify_tc_attached(interface: &str) -> Result<(), BpfTimingError> {
+    let output = std::process::Command::new("tc")
+        .args(["filter", "show", "dev", interface, "egress"])
+        .output()
+        .map_err(|e| {
+            BpfTimingError::VerifyFailed(format!(
+                "cannot run `tc filter show dev {interface} egress`: {e}"
+            ))
+        })?;
+
+    if !output.status.success() {
+        return Err(BpfTimingError::VerifyFailed(format!(
+            "`tc filter show dev {interface} egress` exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !tc_output_has_bpf(&stdout) {
+        return Err(BpfTimingError::VerifyFailed(format!(
+            "no BPF filter on TC egress for {interface}. \
+             TC egress timestamps outgoing SYN packets — without it timing is broken.\n\
+             tc filter output:\n{stdout}"
+        )));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -886,6 +970,68 @@ mod tests {
     #[test]
     fn test_timing_backend_precision_class_xdp_hybrid() {
         assert_eq!(TimingBackend::XdpHybrid.precision_class(), "xdp");
+    }
+
+    // ===========================================
+    // Post-attach verification predicates
+    // ===========================================
+
+    #[test]
+    fn test_xdp_output_with_program() {
+        let output = "\
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 xdp qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+    link/ether aa:bb:cc:dd:ee:ff brd ff:ff:ff:ff:ff:ff
+    prog/xdp id 456 name xdp_timing_ingress tag 9876fedc5432ba10 jitted";
+        assert!(xdp_output_has_program(output));
+    }
+
+    #[test]
+    fn test_xdp_output_with_prog_xdp_only() {
+        let output = "\
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP
+    link/ether aa:bb:cc:dd:ee:ff brd ff:ff:ff:ff:ff:ff
+    prog/xdp id 789 tag aabbccdd11223344";
+        assert!(xdp_output_has_program(output));
+    }
+
+    #[test]
+    fn test_xdp_output_without_program() {
+        let output = "\
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+    link/ether aa:bb:cc:dd:ee:ff brd ff:ff:ff:ff:ff:ff";
+        assert!(!xdp_output_has_program(output));
+    }
+
+    #[test]
+    fn test_tc_output_with_bpf_program() {
+        let output = "\
+filter protocol all pref 49152 bpf chain 0
+filter protocol all pref 49152 bpf chain 0 handle 0x1 timing.bpf.o:[tc_timing_egress] direct-action not_in_hw id 123 tag abcdef1234567890 jitted";
+        assert!(tc_output_has_bpf(output));
+    }
+
+    #[test]
+    fn test_tc_output_empty() {
+        assert!(!tc_output_has_bpf(""));
+    }
+
+    #[test]
+    fn test_tc_output_with_non_bpf_filter() {
+        let output = "\
+filter protocol ip pref 1 u32 chain 0
+filter protocol ip pref 1 u32 chain 0 fh 800: ht divisor 1
+filter protocol ip pref 1 u32 chain 0 fh 800::800 order 2048 key ht 800 bkt 0 flowid 1:1 not_in_hw
+  match c0a80100/ffffff00 at 16";
+        assert!(!tc_output_has_bpf(output));
+    }
+
+    #[test]
+    fn test_verify_failed_error_display() {
+        let err = BpfTimingError::VerifyFailed("no XDP on eth0".to_string());
+        assert_eq!(
+            err.to_string(),
+            "post-attach verification failed: no XDP on eth0"
+        );
     }
 
     #[test]
