@@ -10,7 +10,7 @@ keywords = ["network", "security", "scanner", "ebpf", "xdp"]
 categories = ["network-programming", "command-line-utilities"]
 
 [[bin]]
-name = "limpet"
+name = "limpet-trs"
 path = "src/main.rs"
 
 [lib]

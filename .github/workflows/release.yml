@@ -49,17 +49,17 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build release binary
-        run: cargo build --release --bin limpet
+        run: cargo build --release --bin limpet-trs
 
       - name: Strip binary
-        run: strip target/release/limpet
+        run: strip target/release/limpet-trs
 
       - name: Package binary
         run: |
           SHA=${{ github.event.workflow_run.head_sha }}
           SHORT=${SHA::7}
-          tar -czf limpet-linux-amd64-${SHORT}.tar.gz \
-            -C target/release limpet
+          tar -czf limpet-trs-linux-amd64-${SHORT}.tar.gz \
+            -C target/release limpet-trs
 
       - name: Publish rolling latest release
         env:
@@ -67,7 +67,7 @@ jobs:
         run: |
           SHA=${{ github.event.workflow_run.head_sha }}
           SHORT=${SHA::7}
-          ARCHIVE="limpet-linux-amd64-${SHORT}.tar.gz"
+          ARCHIVE="limpet-trs-linux-amd64-${SHORT}.tar.gz"
 
           # Delete and recreate the 'latest' tag so it points to HEAD
           gh release delete latest --yes 2>/dev/null || true
