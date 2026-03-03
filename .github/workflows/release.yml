@@ -48,20 +48,18 @@ jobs:
             ${{ runner.os }}-cargo-release-
             ${{ runner.os }}-cargo-
 
-      - name: Build release binaries
-        run: cargo build --release --bin limpet --bin limpet-server
+      - name: Build release binary
+        run: cargo build --release --bin limpet
 
-      - name: Strip binaries
-        run: |
-          strip target/release/limpet
-          strip target/release/limpet-server
+      - name: Strip binary
+        run: strip target/release/limpet
 
-      - name: Package binaries
+      - name: Package binary
         run: |
           SHA=${{ github.event.workflow_run.head_sha }}
           SHORT=${SHA::7}
           tar -czf limpet-linux-amd64-${SHORT}.tar.gz \
-            -C target/release limpet limpet-server
+            -C target/release limpet
 
       - name: Publish rolling latest release
         env:
