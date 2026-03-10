@@ -9,7 +9,7 @@ on:
 jobs:
   release:
     name: Build & publish latest
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, nullrabbit]
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     permissions:
