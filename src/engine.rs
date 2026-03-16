@@ -331,21 +331,19 @@ impl ScanEngine {
         let timeout = Duration::from_millis(timeout_ms as u64);
         let target_ip_u32 = u32::from_be_bytes(target_ip.octets());
 
-        // Apply per-request pacing to the shared scanner. We hold the lock
-        // for the entire batch-send phase, so no concurrent access sees the
-        // changed profile. Restored to Aggressive after sending.
-        let mut scanner_guard = self.scanner.lock().await;
-        let original_profile = scanner_guard.profile().clone();
+        // Build per-request stealth profile (no shared state mutation).
+        // Scanner lock is held per-batch, not per-scan, so concurrent
+        // discovery requests can interleave their batches.
         let mut scan_profile = StealthProfile::linux_6x_default();
         request.pacing.apply_to(&mut scan_profile);
-        scanner_guard.set_profile(scan_profile);
 
         let mut all_probes = Vec::new();
         for batch in ports.chunks(batch_size) {
+            let mut scanner_guard = self.scanner.lock().await;
+            scanner_guard.set_profile(scan_profile.clone());
             let result = match scanner_guard.send_syn_batch(target_ip, batch) {
                 Ok(r) => r,
                 Err(e) => {
-                    scanner_guard.set_profile(original_profile);
                     drop(scanner_guard);
                     return ScanResult {
                         request_id: request.request_id,
@@ -363,11 +361,8 @@ impl ScanEngine {
 
             // Drain AF_XDP RX ring between batches to prevent overflow
             scanner_guard.poll_rx(0);
+            drop(scanner_guard);
         }
-
-        // Restore Aggressive profile for timing probes
-        scanner_guard.set_profile(original_profile);
-        drop(scanner_guard);
 
         // Early-return polling: check every 5ms if all probes have responses.
         // Falls back to full timeout as the deadline.
