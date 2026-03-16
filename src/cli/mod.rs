@@ -178,18 +178,12 @@ use crate::ScanResult;
 /// On non-Linux, returns the engine directly (connect-only for dev).
 #[cfg(target_os = "linux")]
 fn create_engine(interface: Option<String>) -> Result<Engine, String> {
-    Engine::new(ScanEngineConfig {
-        interface,
-        passthrough: false,
-    })
+    Engine::new(ScanEngineConfig { interface })
 }
 
 #[cfg(not(target_os = "linux"))]
 fn create_engine(interface: Option<String>) -> Result<Engine, String> {
-    Ok(Engine::new(ScanEngineConfig {
-        interface,
-        passthrough: false,
-    }))
+    Ok(Engine::new(ScanEngineConfig { interface }))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -22,9 +22,6 @@ use crate::{PortState, ScanResult, ScannedPort, TimingBackend, TimingRequest, Ti
 pub struct ScanEngineConfig {
     /// Network interface for XDP (None = auto-detect from /proc/net/route).
     pub interface: Option<String>,
-    /// When true, use raw socket TX only (no AF_XDP redirect).
-    /// BPF timestamps packets but XDP_PASS lets them through to the kernel.
-    pub passthrough: bool,
 }
 
 /// Scanning engine. Shared via `Arc<Engine>` between discovery and timing loops.
@@ -44,8 +41,6 @@ pub struct ScanEngine {
     scanner: Arc<Mutex<SynScanner>>,
     interface: String,
     backend: TimingBackend,
-    #[allow(dead_code)]
-    passthrough: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,10 +103,6 @@ impl Engine {
     /// - SYN scanner creation fails (no IPv4 on interface, raw socket error)
     #[cfg(target_os = "linux")]
     pub fn new(config: ScanEngineConfig) -> Result<Self, String> {
-        if config.passthrough {
-            tracing::info!("passthrough mode: using raw socket TX, no AF_XDP redirect");
-        }
-
         let (backend, collector) = crate::timing::detect_timing_backend(&config.interface)
             .map_err(|e| {
                 format!(
@@ -127,12 +118,11 @@ impl Engine {
         tracing::info!(
             backend = %backend,
             interface = %iface,
-            passthrough = config.passthrough,
             "BPF timing backend initialised"
         );
 
         let bpf = Arc::new(Mutex::new(collector));
-        let scanner = Self::create_scanner(&iface, &bpf, config.passthrough).ok_or_else(|| {
+        let scanner = Self::create_scanner(&iface, &bpf).ok_or_else(|| {
             format!(
                 "SYN scanner creation failed on interface '{iface}'. \
                  Check that the interface has an IPv4 address and raw socket permissions."
@@ -144,7 +134,6 @@ impl Engine {
             scanner,
             interface: iface,
             backend,
-            passthrough: config.passthrough,
         }))
     }
 
@@ -158,18 +147,13 @@ impl Engine {
         }
     }
 
-    /// Create a `SynScanner` with the appropriate sender.
-    ///
-    /// In passthrough mode, uses `RawSocketSender` only (no AF_XDP redirect).
-    /// Otherwise creates a `HybridSender` and registers its AF_XDP fd in xsk_map.
+    /// Create a `SynScanner` with raw socket TX + BPF timestamps.
     #[cfg(target_os = "linux")]
     fn create_scanner(
         iface: &str,
-        bpf: &Arc<Mutex<BpfTimingCollector>>,
-        passthrough: bool,
+        _bpf: &Arc<Mutex<BpfTimingCollector>>,
     ) -> Option<Arc<Mutex<SynScanner>>> {
         use crate::scanner::afxdp_sender::AfXdpSend;
-        use crate::scanner::hybrid_sender::HybridSender;
         use crate::scanner::raw_socket_sender::RawSocketSender;
         use crate::scanner::syn_sender::interface_source_ip;
 
@@ -181,39 +165,11 @@ impl Engine {
             }
         };
 
-        let xdp_sender: Box<dyn AfXdpSend> = if passthrough {
-            match RawSocketSender::new(src_ip, Some(iface)) {
-                Ok(s) => Box::new(s),
-                Err(e) => {
-                    tracing::error!(error = %e, "raw socket sender failed");
-                    return None;
-                }
-            }
-        } else {
-            match HybridSender::new(iface, 0, src_ip) {
-                Ok(sender) => {
-                    // Register AF_XDP socket in BPF xsk_map.
-                    // try_lock() is safe here — called at init, no contention.
-                    if let Ok(bpf_guard) = bpf.try_lock() {
-                        if let Err(e) = bpf_guard.register_xsk_fd(sender.fd()) {
-                            tracing::warn!(error = %e, "xsk_map registration failed");
-                        }
-                    }
-                    Box::new(sender)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "hybrid sender unavailable — falling back to raw socket TX"
-                    );
-                    match RawSocketSender::new(src_ip, Some(iface)) {
-                        Ok(s) => Box::new(s),
-                        Err(e) => {
-                            tracing::error!(error = %e, "raw socket fallback also failed");
-                            return None;
-                        }
-                    }
-                }
+        let xdp_sender: Box<dyn AfXdpSend> = match RawSocketSender::new(src_ip, Some(iface)) {
+            Ok(s) => Box::new(s),
+            Err(e) => {
+                tracing::error!(error = %e, "raw socket sender failed");
+                return None;
             }
         };
 
@@ -731,7 +687,6 @@ mod tests {
         // Either way, it must not panic.
         let result = Engine::new(ScanEngineConfig {
             interface: None,
-            passthrough: true,
         });
         match result {
             Ok(engine) => {
@@ -752,7 +707,6 @@ mod tests {
     fn test_engine_new_returns_connect_only_on_non_linux() {
         let engine = Engine::new(ScanEngineConfig {
             interface: None,
-            passthrough: true,
         });
         assert_eq!(engine.backend_str(), "connect");
     }
