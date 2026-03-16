@@ -719,7 +719,7 @@ pub fn check_bpf_source_safety(source: &str) -> Vec<String> {
 /// Build the command to remove a stale XDP program via system `ip` command.
 fn xdp_cleanup_command(interface: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new("ip");
-    cmd.args(["link", "set", "dev", interface, "xdpgeneric", "off"]);
+    cmd.args(["link", "set", "dev", interface, "xdp", "off"]);
     cmd
 }
 
@@ -1746,14 +1746,14 @@ filter protocol ip pref 1 u32 chain 0 fh 800::800 order 2048 key ht 800 bkt 0 fl
         let cmd = xdp_cleanup_command("eth0");
         assert_eq!(cmd.get_program().to_str().unwrap(), "ip");
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert_eq!(args, &["link", "set", "dev", "eth0", "xdpgeneric", "off"]);
+        assert_eq!(args, &["link", "set", "dev", "eth0", "xdp", "off"]);
     }
 
     #[test]
     fn test_xdp_cleanup_command_custom_interface() {
         let cmd = xdp_cleanup_command("ens5");
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert_eq!(args, &["link", "set", "dev", "ens5", "xdpgeneric", "off"]);
+        assert_eq!(args, &["link", "set", "dev", "ens5", "xdp", "off"]);
     }
 
     #[test]
