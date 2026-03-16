@@ -351,6 +351,19 @@ impl BpfTimingCollector {
     }
 }
 
+impl BpfTimingCollector {
+    /// Verify both XDP ingress and TC egress are still attached.
+    ///
+    /// Runs `ip link show` + `tc filter show` (~5ms overhead). Use this as a
+    /// pre-scan health check for long-lived processes where BPF programs may
+    /// detach after initial setup (interface bounce, admin removal, etc.).
+    pub fn verify_attached(&self) -> Result<(), BpfTimingError> {
+        verify_xdp_attached(&self.interface)?;
+        verify_tc_attached(&self.interface)?;
+        Ok(())
+    }
+}
+
 impl Drop for BpfTimingCollector {
     fn drop(&mut self) {
         // TC hooks persist after userspace exits, so we must explicitly detach

@@ -21,7 +21,7 @@ What does TRS stand for? Temporal Resonance Scanner. You heard it here first.
 ## Features
 
 - **SYN scanner** — raw socket sender, no connection established
-- **XDP/BPF timing** — per-packet timestamps from the kernel bypass path; falls back to userspace `gettimeofday` when XDP is unavailable
+- **XDP/BPF timing** — per-packet timestamps from the kernel bypass path; requires Linux with BPF capabilities
 - **Stealth pacing** — configurable inter-packet delay to avoid triggering rate limits
 - **ML-ready output** — timing samples (not just a single RTT), mean/p50/p90 stats, and 64-dim embedding vectors for each port
 - **JSON output** — machine-readable results for pipelines
@@ -34,13 +34,13 @@ What does TRS stand for? Temporal Resonance Scanner. You heard it here first.
 
 | Requirement | Notes |
 |-------------|-------|
-| Linux kernel ≥ 5.11 | For BPF ring buffers; XDP timing degrades gracefully to userspace on older kernels |
+| Linux kernel ≥ 5.11 | For BPF ring buffers; fails hard if BPF unavailable |
 | `NET_RAW` + `NET_ADMIN` capabilities | Required for raw socket SYN scanning |
-| `CAP_BPF` + `CAP_SYS_ADMIN` | Required for XDP/BPF timing (not needed for userspace fallback) |
-| Bare-metal or KVM VM | AF_XDP requires a real NIC driver; Docker Desktop (macOS/Windows) will fall back to userspace timing |
+| `CAP_BPF` + `CAP_SYS_ADMIN` | Required for XDP/BPF timing (no unprivileged fallback) |
+| Bare-metal or KVM VM | AF_XDP requires a real NIC driver; cannot load BPF — limpet will not run |
 | Root or `sudo` | Easiest path; or grant caps with `setcap` |
 
-**Does not work on:** macOS, Windows, Docker Desktop (for BPF features — CLI builds but timing falls back to userspace).
+**Does not work on:** macOS, Windows, Docker Desktop (BPF programs cannot load — scanning unavailable).
 
 ---
 
@@ -259,9 +259,9 @@ curl -X POST http://localhost:8888/v1/timing \
 ## Limitations
 
 **Platform**
-- Linux only. The BPF/XDP path requires kernel ≥ 5.11 for ring buffers. Older kernels fall back to userspace timing automatically.
+- Linux only. The BPF/XDP path requires kernel ≥ 5.11 for ring buffers. Older kernels fail at BPF program load — no fallback.
 - AF_XDP requires a NIC driver with XDP support. Virtio-net (KVM/QEMU) works. VMware vmxnet3 and some cloud hypervisor NICs do not.
-- Docker Desktop on macOS/Windows: the CLI builds and runs but the BPF programs cannot load — timing falls back to userspace.
+- Docker Desktop on macOS/Windows: the CLI builds but the BPF programs cannot load — limpet will exit with an error.
 
 **Scanning**
 - **No service detection** — limpet identifies open ports and collects RTT samples. The `banner` field contains raw bytes from the server's first response packet, but there is no protocol parsing.
@@ -272,7 +272,7 @@ curl -X POST http://localhost:8888/v1/timing \
 
 **Timing precision**
 - XDP timestamps are recorded at NIC receive time, not in application code. This gives you real wire latency including NIC driver overhead, not software scheduling jitter.
-- Userspace fallback (`precision_class: "userspace"`) has ±50–200µs jitter under load — accurate enough for coarse fingerprinting, not for sub-millisecond jitter analysis.
+- No userspace timing fallback — all timing uses XDP kernel timestamps.
 - RTT samples include the full TCP handshake (SYN → SYN-ACK). This is intentional: handshake latency is the fingerprinting signal.
 
 **Permissions**
@@ -304,7 +304,7 @@ limpet/
 │   │   └── mod.rs
 │   └── timing/
 │       ├── xdp.rs          # BpfTimingCollector — XDP kernel-bypass timing
-│       ├── userspace.rs    # Fallback: connect(2) + gettimeofday timing
+│       ├── userspace.rs    # Raw SYN probe timing collection (BPF-backed)
 │       ├── embeddings.rs   # 64-dim feature vector extraction
 │       ├── stats.rs        # Mean / std / percentile helpers
 │       └── mod.rs

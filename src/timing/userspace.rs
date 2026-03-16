@@ -89,6 +89,17 @@ pub async fn collect_timing_samples_raw(
     bpf: Arc<Mutex<BpfTimingCollector>>,
     scanner: Arc<Mutex<SynScanner>>,
 ) -> TimingResult {
+    // Pre-timing BPF health check: verify XDP + TC are still attached.
+    {
+        let bpf_ref = bpf.lock().await;
+        if let Err(e) = bpf_ref.verify_attached() {
+            return TimingResult::error(
+                request,
+                format!("BPF health check failed: {e}"),
+            );
+        }
+    }
+
     let addr = match resolve_address(&request.target_host, request.target_port) {
         Ok(addr) => addr,
         Err(e) => return TimingResult::error(request, format!("DNS resolution failed: {}", e)),

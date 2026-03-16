@@ -282,6 +282,25 @@ impl ScanEngine {
         ports: &[u16],
         start: Instant,
     ) -> ScanResult {
+        // Pre-scan BPF health check: verify XDP + TC are still attached.
+        // Catches detachment between engine creation and scan execution —
+        // the critical gap for long-lived processes (e.g. limpet-timing).
+        {
+            let bpf_guard = self.collector.lock().await;
+            if let Err(e) = bpf_guard.verify_attached() {
+                return ScanResult {
+                    request_id: request.request_id,
+                    target_ip,
+                    target_hostname,
+                    ports: vec![],
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    backend: self.backend.as_str().to_string(),
+                    scanned_at: Utc::now(),
+                    error: Some(format!("BPF health check failed: {e}")),
+                };
+            }
+        }
+
         let batch_size = request.pacing.batch_size();
         let timeout_ms = request.timeout_ms;
         let timeout = Duration::from_millis(timeout_ms as u64);
