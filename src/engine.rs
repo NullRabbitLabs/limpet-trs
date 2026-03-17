@@ -307,36 +307,49 @@ impl ScanEngine {
         let target_ip_u32 = u32::from_be_bytes(target_ip.octets());
 
         // Build per-request stealth profile (no shared state mutation).
-        // Scanner lock is held per-batch, not per-scan, so concurrent
-        // discovery requests can interleave their batches.
+        // Send probes individually so the scanner mutex is only held for
+        // each sendto syscall (microseconds), not during pacing sleeps.
+        // This lets concurrent discovery requests interleave their probes
+        // instead of serialising through 1.5s batch holds.
         let mut scan_profile = StealthProfile::linux_6x_default();
         request.pacing.apply_to(&mut scan_profile);
 
         let mut all_probes = Vec::new();
         for batch in ports.chunks(batch_size) {
-            let mut scanner_guard = self.scanner.lock().unwrap();
-            scanner_guard.set_profile(scan_profile.clone());
-            let result = match scanner_guard.send_syn_batch(target_ip, batch) {
-                Ok(r) => r,
-                Err(e) => {
-                    drop(scanner_guard);
-                    return ScanResult {
-                        request_id: request.request_id,
-                        target_ip,
-                        target_hostname,
-                        ports: vec![],
-                        duration_ms: start.elapsed().as_millis() as u64,
-                        backend: self.backend.as_str().to_string(),
-                        scanned_at: Utc::now(),
-                        error: Some(format!("scan error: {e}")),
-                    };
+            for &port in batch {
+                let probe = {
+                    let mut scanner_guard = self.scanner.lock().unwrap();
+                    scanner_guard.set_profile(scan_profile.clone());
+                    match scanner_guard.send_single_syn(target_ip, port) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return ScanResult {
+                                request_id: request.request_id,
+                                target_ip,
+                                target_hostname,
+                                ports: vec![],
+                                duration_ms: start.elapsed().as_millis() as u64,
+                                backend: self.backend.as_str().to_string(),
+                                scanned_at: Utc::now(),
+                                error: Some(format!("scan error: {e}")),
+                            };
+                        }
+                    }
+                };
+                all_probes.push(probe);
+
+                // Pacing delay OUTSIDE the mutex — other scans can send while we sleep
+                let delay = scan_profile.jittered_delay_ms();
+                if delay > 0 {
+                    std::thread::sleep(Duration::from_millis(delay));
                 }
-            };
-            all_probes.extend(result.probed_ports);
+            }
 
             // Drain AF_XDP RX ring between batches to prevent overflow
-            scanner_guard.poll_rx(0);
-            drop(scanner_guard);
+            {
+                let mut scanner_guard = self.scanner.lock().unwrap();
+                scanner_guard.poll_rx(0);
+            }
         }
 
         // Early-return polling: check every 5ms if all probes have responses.
