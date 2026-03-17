@@ -5,7 +5,7 @@
 //! No userspace fallback — requires Linux with CAP_BPF + CAP_NET_ADMIN.
 
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 
 use crate::{TimingRequest, TimingResult};
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -47,7 +47,7 @@ async fn poll_bpf_timing_entry(
         // Drain AF_XDP ring to prevent overflow and allow XDP to keep redirecting.
         // We don't care which frames arrive here — the BPF map is the source of truth.
         {
-            let mut scanner_ref = scanner.lock().await;
+            let mut scanner_ref = scanner.lock().unwrap();
             scanner_ref.poll_rx(0);
         }
 
@@ -55,7 +55,7 @@ async fn poll_bpf_timing_entry(
         // read_timing_v2 returns None when: (a) no entry exists, or (b) only SYN flag set
         // (TC recorded the SYN but no response yet). Returns Some once response arrives.
         {
-            let bpf_ref = bpf.lock().await;
+            let bpf_ref = bpf.lock().unwrap();
             if let Some(entry) = bpf_ref.read_timing_v2(dst_ip, dst_port, src_port) {
                 return Some(entry);
             }
@@ -91,7 +91,7 @@ pub async fn collect_timing_samples_raw(
 ) -> TimingResult {
     // Pre-timing BPF health check: verify XDP + TC are still attached.
     {
-        let bpf_ref = bpf.lock().await;
+        let bpf_ref = bpf.lock().unwrap();
         if let Err(e) = bpf_ref.verify_attached() {
             return TimingResult::error(
                 request,
@@ -128,7 +128,7 @@ pub async fn collect_timing_samples_raw(
     for _i in 0..sample_count {
         // Send a single raw SYN probe via AF_XDP TX
         let probe = {
-            let mut scanner_ref = scanner.lock().await;
+            let mut scanner_ref = scanner.lock().unwrap();
             match scanner_ref.send_single_syn(target_ipv4, dst_port) {
                 Ok(p) => p,
                 Err(e) => {
@@ -192,13 +192,13 @@ pub async fn collect_timing_samples_raw(
 
         // Clean up BPF map entry
         {
-            let bpf_ref = bpf.lock().await;
+            let bpf_ref = bpf.lock().unwrap();
             bpf_ref.delete_entry(dst_ip_u32, dst_port, probe.src_port);
         }
 
         // Inter-probe jitter delay from stealth profile
         let delay_ms = {
-            let scanner_ref = scanner.lock().await;
+            let scanner_ref = scanner.lock().unwrap();
             scanner_ref.profile().jittered_delay_ms()
         };
         if delay_ms > 0 {
@@ -215,7 +215,7 @@ pub async fn collect_timing_samples_raw(
 
     let stats = calculate_stats(&samples);
     let precision_class = {
-        let bpf_ref = bpf.lock().await;
+        let bpf_ref = bpf.lock().unwrap();
         let base = bpf_ref.backend().precision_class().to_string();
         if skipped_count > 0 {
             format!("{base}_degraded")

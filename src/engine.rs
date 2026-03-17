@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 use uuid::Uuid;
 
 use crate::scanner::collector::DiscoveryCollector;
@@ -286,7 +286,7 @@ impl ScanEngine {
         // Catches detachment between engine creation and scan execution —
         // the critical gap for long-lived processes (e.g. limpet-timing).
         {
-            let bpf_guard = self.collector.lock().await;
+            let bpf_guard = self.collector.lock().unwrap();
             if let Err(e) = bpf_guard.verify_attached() {
                 return ScanResult {
                     request_id: request.request_id,
@@ -314,7 +314,7 @@ impl ScanEngine {
 
         let mut all_probes = Vec::new();
         for batch in ports.chunks(batch_size) {
-            let mut scanner_guard = self.scanner.lock().await;
+            let mut scanner_guard = self.scanner.lock().unwrap();
             scanner_guard.set_profile(scan_profile.clone());
             let result = match scanner_guard.send_syn_batch(target_ip, batch) {
                 Ok(r) => r,
@@ -354,7 +354,7 @@ impl ScanEngine {
                 let remaining = deadline - now;
                 tokio::time::sleep(poll_interval.min(remaining)).await;
 
-                let bpf_guard = self.collector.lock().await;
+                let bpf_guard = self.collector.lock().unwrap();
                 let responded = all_probes
                     .iter()
                     .filter(|probe| {
@@ -373,7 +373,7 @@ impl ScanEngine {
 
         // Collect all results in one pass
         let collector = DiscoveryCollector::new(timeout);
-        let bpf_guard = self.collector.lock().await;
+        let bpf_guard = self.collector.lock().unwrap();
         let discovery = collector.collect(&all_probes, &*bpf_guard, target_ip_u32);
         drop(bpf_guard);
 
