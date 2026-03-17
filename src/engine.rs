@@ -353,19 +353,20 @@ impl ScanEngine {
         }
 
         // Early-return polling: check every 5ms if all probes have responses.
-        // Falls back to full timeout as the deadline.
+        // Uses std::thread::sleep (not tokio::time::sleep) so the entire
+        // discover_bpf path is fully synchronous — safe inside spawn_blocking
+        // without relying on tokio's timer driver to wake blocked threads.
         {
             let poll_interval = Duration::from_millis(5);
-            let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
             let total_probes = all_probes.len();
 
             loop {
-                let now = tokio::time::Instant::now();
-                if now >= deadline {
+                if Instant::now() >= deadline {
                     break;
                 }
-                let remaining = deadline - now;
-                tokio::time::sleep(poll_interval.min(remaining)).await;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(poll_interval.min(remaining));
 
                 let bpf_guard = self.collector.lock().unwrap();
                 let responded = all_probes
