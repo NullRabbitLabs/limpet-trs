@@ -44,26 +44,24 @@ pub struct ScanEngine {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DNS resolution
+// IP parsing (DNS removed — orchestrator resolves hostnames before dispatch)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Resolve a hostname or IP string to an `Ipv4Addr`.
+/// Parse an IPv4 address literal. DNS resolution is not performed —
+/// the orchestrator must resolve hostnames before dispatching to limpet.
 ///
-/// Returns `(ip, hostname)` where `hostname` is `Some` if DNS was performed.
+/// Returns `(ip, None)` on success. The second element exists for API
+/// compatibility with callers that previously received a hostname.
 pub fn resolve_target(target: &str) -> Result<(Ipv4Addr, Option<String>), String> {
-    if let Ok(ip) = target.parse::<Ipv4Addr>() {
-        return Ok((ip, None));
-    }
-    use std::net::ToSocketAddrs;
-    let addrs = format!("{target}:0")
-        .to_socket_addrs()
-        .map_err(|e| format!("DNS resolution failed for '{target}': {e}"))?;
-    for addr in addrs {
-        if let std::net::IpAddr::V4(ip) = addr.ip() {
-            return Ok((ip, Some(target.to_string())));
-        }
-    }
-    Err(format!("no IPv4 address found for '{target}'"))
+    target
+        .parse::<Ipv4Addr>()
+        .map(|ip| (ip, None))
+        .map_err(|_| {
+            format!(
+                "'{target}' is not a valid IPv4 address — \
+                 orchestrator must resolve hostnames before dispatching to limpet"
+            )
+        })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -280,6 +278,7 @@ impl Engine {
                 sample_count: sample_count as u32,
                 timeout_ms: request.timeout_ms,
                 banner_timeout_ms: None,
+                target_uuid: None,
             };
             let result = self.collect_timing(&timing_req).await;
             timing_results.push(result);
@@ -540,20 +539,22 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_target_returns_hostname_for_dns() {
-        // localhost should resolve and return the hostname
+    fn test_resolve_target_rejects_hostname() {
+        // DNS is no longer performed — hostnames must be resolved by orchestrator
         let result = resolve_target("localhost");
-        if let Ok((_ip, hostname)) = result {
-            assert_eq!(hostname.as_deref(), Some("localhost"));
-        }
-        // If localhost doesn't resolve (some CI), the test still passes
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("not a valid IPv4 address"));
     }
 
     #[test]
     fn test_resolve_target_invalid_returns_error() {
         let result = resolve_target("this-host-does-not-exist-12345.invalid");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("DNS resolution failed"));
+        assert!(result
+            .unwrap_err()
+            .contains("not a valid IPv4 address"));
     }
 
     // ── Engine::ConnectOnly ────────────────────────────────────────────────
@@ -587,6 +588,7 @@ mod tests {
             sample_count: 5,
             timeout_ms: 1000,
             banner_timeout_ms: None,
+            target_uuid: None,
         };
         let result = engine.collect_timing(&request).await;
         assert!(result.error.is_some());
@@ -700,7 +702,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_engine_discover_dns_error() {
+    async fn test_engine_discover_hostname_rejected() {
         let engine = Engine::ConnectOnly {
             interface: "lo".to_string(),
         };
@@ -720,7 +722,7 @@ mod tests {
             .error
             .as_ref()
             .unwrap()
-            .contains("DNS resolution failed"));
+            .contains("not a valid IPv4 address"));
         assert!(result.ports.is_empty());
     }
 

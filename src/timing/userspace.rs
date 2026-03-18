@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::{TimingRequest, TimingResult};
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr};
 
 use super::stats::calculate_stats;
 use super::xdp::BpfTimingCollector;
@@ -243,17 +243,21 @@ pub async fn collect_timing_samples_raw(
         banner: None, // SYN-only: no handshake, no banner
         source_ip: None,
         worker_node: None,
+        target_uuid: request.target_uuid,
     }
 }
 
-/// Resolve hostname and port to a socket address.
+/// Parse an IP address and port into a socket address.
+/// DNS resolution is not performed — the orchestrator must resolve
+/// hostnames before dispatching to limpet.
 pub(crate) fn resolve_address(host: &str, port: u16) -> Result<SocketAddr, String> {
-    let addr_str = format!("{}:{}", host, port);
-    addr_str
-        .to_socket_addrs()
-        .map_err(|e| e.to_string())?
-        .next()
-        .ok_or_else(|| "No addresses found".to_string())
+    let ip: IpAddr = host.parse().map_err(|_| {
+        format!(
+            "'{host}' is not a valid IP address — \
+             orchestrator must resolve hostnames before dispatching to limpet"
+        )
+    })?;
+    Ok(SocketAddr::new(ip, port))
 }
 
 #[cfg(test)]
@@ -297,6 +301,7 @@ mod tests {
             banner: None,
             source_ip: None,
             worker_node: None,
+            target_uuid: None,
         };
         let err = result.error.unwrap();
         assert!(
@@ -330,6 +335,7 @@ mod tests {
             banner: None,
             source_ip: None,
             worker_node: None,
+            target_uuid: None,
         };
         assert!(
             result.banner.is_none(),
@@ -348,23 +354,26 @@ mod tests {
             sample_count: 3,
             timeout_ms: 1000,
             banner_timeout_ms: None,
+            target_uuid: None,
         };
 
-        // We need real BPF + scanner for the function signature, but IPv6 check
-        // happens before any BPF/scanner interaction. Since we can't create
-        // BpfTimingCollector on macOS, we verify the resolve_address path.
+        // resolve_address now parses IP literals directly (no DNS)
         let addr = resolve_address("::1", 80);
-        if let Ok(SocketAddr::V6(_)) = addr {
-            // If ::1 resolves to IPv6, the function would return an error
-            // We can't call collect_timing_samples_raw without BPF, but verify the logic
-            // IPv6 address correctly identified — no further assertion needed
-        }
+        assert!(addr.is_ok(), "::1 is a valid IPv6 literal");
+        assert!(addr.unwrap().is_ipv6());
     }
 
     #[test]
     fn test_resolve_address_ip() {
         let addr = resolve_address("127.0.0.1", 80).unwrap();
         assert_eq!(addr.port(), 80);
+    }
+
+    #[test]
+    fn test_resolve_address_rejects_hostname() {
+        let result = resolve_address("localhost", 80);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not a valid IP address"));
     }
 
     #[test]

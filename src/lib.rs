@@ -332,6 +332,9 @@ pub struct TimingRequest {
     /// Read timeout for passive banner capture on the last sample (ms).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub banner_timeout_ms: Option<u32>,
+    /// Global host UUID from scanning.hosts (passed through from orchestrator).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_uuid: Option<Uuid>,
 }
 
 /// Result of timing collection containing samples and statistics.
@@ -365,12 +368,15 @@ pub struct TimingResult {
         with = "base64_opt_bytes"
     )]
     pub banner: Option<Vec<u8>>,
-    /// Source IP used for timing probes (populated by server, not collector).
+    /// Source IP used for timing probes (deprecated — always None).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ip: Option<String>,
     /// Worker node hostname (populated by server, not collector).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker_node: Option<String>,
+    /// Global host UUID from scanning.hosts (passed through from request).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_uuid: Option<Uuid>,
 }
 
 /// Statistical summary of timing samples.
@@ -415,6 +421,7 @@ impl TimingResult {
             banner: None,
             source_ip: None,
             worker_node: None,
+            target_uuid: request.target_uuid,
         }
     }
 }

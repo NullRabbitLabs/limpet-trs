@@ -223,6 +223,7 @@ pub async fn run_time(
         sample_count: samples,
         timeout_ms,
         banner_timeout_ms: None,
+        target_uuid: None,
     };
 
     let result = engine.collect_timing(&request).await;
