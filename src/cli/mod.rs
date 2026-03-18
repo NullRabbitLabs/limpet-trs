@@ -85,6 +85,9 @@ pub struct ScanArgs {
     /// Network interface for XDP (auto-detect if omitted)
     #[arg(long)]
     pub interface: Option<String>,
+    /// Supplemental timing samples per open port (0 = skip)
+    #[arg(long, default_value = "0")]
+    pub timing_samples: u16,
 }
 
 /// Arguments for the `time` subcommand.
@@ -143,13 +146,15 @@ pub enum OutputFmt {
 /// Run a port scan and return the result.
 ///
 /// Creates an Engine, builds a ScanRequest, and delegates to `engine.discover()`.
+/// When `timing_samples > 0`, open ports are re-probed for multi-sample timing profiles.
 pub async fn run_scan(
     target: &str,
     port_spec: PortSpec,
     pacing: PacingProfile,
     timeout_ms: u32,
     interface: Option<String>,
-) -> Result<ScanResult, String> {
+    timing_samples: u16,
+) -> Result<(ScanResult, Vec<crate::TimingResult>), String> {
     let engine = create_engine(interface.clone())?;
 
     let request = ScanRequest {
@@ -160,13 +165,18 @@ pub async fn run_scan(
         timeout_ms,
         interface,
         max_ports: None,
+        timing_samples: if timing_samples > 0 {
+            Some(timing_samples)
+        } else {
+            None
+        },
     };
 
-    let result = engine.discover(&request).await;
+    let (result, timing_results) = engine.discover_with_timing(&request).await;
     if let Some(ref e) = result.error {
         Err(e.clone())
     } else {
-        Ok(result)
+        Ok((result, timing_results))
     }
 }
 

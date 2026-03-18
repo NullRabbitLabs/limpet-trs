@@ -224,6 +224,11 @@ pub async fn collect_timing_samples_raw(
         }
     };
 
+    let embedding = match super::embeddings::extract_features(&samples) {
+        Ok(fv) => Some(fv.to_embedding()),
+        Err(_) => None,
+    };
+
     TimingResult {
         request_id: request.request_id,
         scan_id: request.scan_id,
@@ -234,7 +239,7 @@ pub async fn collect_timing_samples_raw(
         stats,
         collected_at: chrono::Utc::now(),
         error: None,
-        embedding: None,
+        embedding,
         banner: None, // SYN-only: no handshake, no banner
         source_ip: None,
         worker_node: None,

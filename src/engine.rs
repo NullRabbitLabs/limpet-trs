@@ -251,6 +251,43 @@ impl Engine {
         }
     }
 
+    /// Run a port discovery scan, then collect supplemental timing for open ports.
+    ///
+    /// If `request.timing_samples` is `Some(n)` with `n > 0`, each open port is
+    /// re-probed `n` times to build a multi-sample timing profile with embeddings.
+    /// Closed/filtered/firewalled ports are skipped.
+    pub async fn discover_with_timing(
+        &self,
+        request: &crate::ScanRequest,
+    ) -> (ScanResult, Vec<TimingResult>) {
+        let scan_result = self.discover(request).await;
+        let mut timing_results = Vec::new();
+
+        let sample_count = request.timing_samples.unwrap_or(0);
+        if sample_count == 0 {
+            return (scan_result, timing_results);
+        }
+
+        for port in &scan_result.ports {
+            if port.state != crate::PortState::Open {
+                continue;
+            }
+            let timing_req = TimingRequest {
+                request_id: Uuid::new_v4(),
+                scan_id: None,
+                target_host: scan_result.target_ip.to_string(),
+                target_port: port.port,
+                sample_count: sample_count as u32,
+                timeout_ms: request.timeout_ms,
+                banner_timeout_ms: None,
+            };
+            let result = self.collect_timing(&timing_req).await;
+            timing_results.push(result);
+        }
+
+        (scan_result, timing_results)
+    }
+
     /// Backend string identifier.
     pub fn backend_str(&self) -> &str {
         match self {
@@ -652,6 +689,7 @@ mod tests {
             timeout_ms: 500,
             interface: None,
             max_ports: None,
+            timing_samples: None,
         };
         let result = engine.discover(&request).await;
         assert_eq!(result.request_id, request.request_id);
@@ -674,6 +712,7 @@ mod tests {
             timeout_ms: 1000,
             interface: None,
             max_ports: None,
+            timing_samples: None,
         };
         let result = engine.discover(&request).await;
         assert!(result.error.is_some());
@@ -701,6 +740,7 @@ mod tests {
             timeout_ms: 500,
             interface: None,
             max_ports: Some(3),
+            timing_samples: None,
         };
         let result = engine.discover(&request).await;
         assert_eq!(

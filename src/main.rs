@@ -28,6 +28,7 @@ async fn main() {
                 args.timeout,
                 args.output,
                 args.interface,
+                args.timing_samples,
             )
             .await;
         }
@@ -61,7 +62,7 @@ async fn main() {
             let timeout = cli.timeout.unwrap_or(2000);
             let output = cli.output.unwrap_or(OutputFmt::Pretty);
 
-            run_scan_command(&target, &ports, stealth, timeout, output, cli.interface).await;
+            run_scan_command(&target, &ports, stealth, timeout, output, cli.interface, 0).await;
         }
     }
 }
@@ -73,6 +74,7 @@ async fn run_scan_command(
     timeout: u32,
     output: OutputFmt,
     interface: Option<String>,
+    timing_samples: u16,
 ) {
     let port_spec = match limpet::PortSpec::parse(ports_str) {
         Ok(s) => s,
@@ -84,10 +86,31 @@ async fn run_scan_command(
 
     let pacing: limpet::scanner::stealth::PacingProfile = stealth.into();
 
-    match cli::run_scan(target, port_spec, pacing, timeout, interface).await {
-        Ok(result) => match output {
-            OutputFmt::Pretty => print!("{}", cli::format_pretty(&result, target)),
-            OutputFmt::Json => println!("{}", cli::format_json(&result)),
+    match cli::run_scan(target, port_spec, pacing, timeout, interface, timing_samples).await {
+        Ok((result, timing_results)) => match output {
+            OutputFmt::Pretty => {
+                print!("{}", cli::format_pretty(&result, target));
+                if !timing_results.is_empty() {
+                    println!("\nTiming profiles ({} ports):", timing_results.len());
+                    for tr in &timing_results {
+                        let emb = if tr.embedding.is_some() { "64-dim" } else { "none" };
+                        println!(
+                            "  port {}: {} samples, mean={:.2}µs, embedding={}",
+                            tr.target_port,
+                            tr.samples.len(),
+                            tr.stats.mean,
+                            emb,
+                        );
+                    }
+                }
+            }
+            OutputFmt::Json => {
+                let out = serde_json::json!({
+                    "scan": result,
+                    "timing": timing_results,
+                });
+                println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            }
         },
         Err(e) => {
             eprintln!("Scan failed: {e}");

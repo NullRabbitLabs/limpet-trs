@@ -236,6 +236,10 @@ pub struct ScanRequest {
     /// Maximum number of ports to scan (truncates expanded port list).
     #[serde(default)]
     pub max_ports: Option<u32>,
+    /// Number of supplemental timing samples per open port (0 or None = skip).
+    /// After discovery, open ports are re-probed N times to build timing profiles.
+    #[serde(default)]
+    pub timing_samples: Option<u16>,
 }
 
 /// Result of a port scan.
